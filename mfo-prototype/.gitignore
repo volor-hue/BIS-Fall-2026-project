@@ -1,0 +1,8 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+mfo.db
+.pytest_cache/
+uploads/*
+!uploads/.gitkeep
