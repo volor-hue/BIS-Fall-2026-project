@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-9">
+    <h2>Client registration</h2>
+    {% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
+    <!-- enctype="multipart/form-data" is required to send a file -->
+    <form method="post" action="/register" enctype="multipart/form-data" class="card card-body">
+      <h5>Personal data <small class="text-muted">(table: clients)</small></h5>
+      <div class="row g-3">
+        <div class="col-md-6"><label class="form-label">Full name</label>
+          <input name="full_name" class="form-control" required></div>
+        <div class="col-md-6"><label class="form-label">IIN (12 digits)</label>
+          <!-- pattern checks 12 digits in the browser; the server checks again -->
+          <input name="iin" class="form-control" pattern="[0-9]{12}" maxlength="12" required></div>
+        <div class="col-md-6"><label class="form-label">Phone</label>
+          <input name="phone" class="form-control" placeholder="+7 7xx xxx xx xx" required></div>
+        <div class="col-md-6"><label class="form-label">Email (used for login)</label>
+          <input name="email" type="email" class="form-control" required></div>
+        <div class="col-md-6"><label class="form-label">Password</label>
+          <input name="password" type="password" class="form-control" minlength="4" required></div>
+        <div class="col-md-6"><label class="form-label">Birth date</label>
+          <input name="birth_date" type="date" class="form-control" required></div>
+        <div class="col-md-8"><label class="form-label">Address</label>
+          <input name="address" class="form-control"></div>
+        <div class="col-md-4"><label class="form-label">Marital status</label>
+          <select name="marital_status" class="form-select">
+            <option>Single</option><option>Married</option><option>Divorced</option><option>Widowed</option>
+          </select></div>
+      </div>
+      <h5 class="mt-4">Employment <small class="text-muted">(table: employment)</small></h5>
+      <div class="row g-3">
+        <div class="col-md-5"><label class="form-label">Employer</label>
+          <input name="employer_name" class="form-control" required></div>
+        <div class="col-md-3"><label class="form-label">Position</label>
+          <input name="position" class="form-control"></div>
+        <div class="col-md-4"><label class="form-label">Monthly income (KZT)</label>
+          <input name="monthly_income" type="number" min="0" step="1" class="form-control" required></div>
+      </div>
+      <h5 class="mt-4">Passport <small class="text-muted">(table: documents, file saved to uploads/)</small></h5>
+      <input name="passport_photo" type="file" accept="image/*,.pdf" class="form-control">
+      <button class="btn btn-primary mt-4">Register</button>
+      <p class="mt-2 mb-0">Already registered? <a href="/login">Log in</a></p>
+    </form>
+  </div>
+</div>
+{% endblock %}

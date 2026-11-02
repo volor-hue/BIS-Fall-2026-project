@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Employee dashboard</h2>
+<p>All loan applications. Applications over 500 000 KZT wait for your decision.
+   Your decision is saved with your employee_id ({{ employee.employee_id }}).</p>
+<table class="table table-sm table-bordered bg-white">
+  <thead><tr><th>#</th><th>Client</th><th>IIN</th><th>Income</th><th>Amount</th><th>Term</th>
+    <th>Purpose</th><th>Status</th><th>Type</th><th>Reviewed by</th><th>Action</th></tr></thead>
+  <tbody id="apps"></tbody>
+</table>
+
+<div id="checks-box" class="d-none mb-4">
+  <h5>Automatic checks for application #<span id="checks-app"></span> <small class="text-muted">(table: client_checks)</small></h5>
+  <div id="checks"></div>
+</div>
+
+<h5>Issued loans</h5>
+<table class="table table-sm table-bordered bg-white">
+  <thead><tr><th>Loan #</th><th>Application #</th><th>Client</th><th>Amount</th><th>Rate</th><th>Issued</th><th>Paid</th></tr></thead>
+  <tbody id="loans"></tbody>
+</table>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const EMPLOYEE_ID = {{ employee.employee_id }};
+
+async function loadApplications() {
+  const apps = await (await fetch("/api/applications")).json();
+  let html = "";
+  for (const a of apps) {
+    let actions = `<button class="btn btn-sm btn-outline-secondary" onclick="showChecks(${a.application_id})">Checks</button> `;
+    // Approve/Reject only for Manual applications that are still pending.
+    if (a.approval_type === "Manual" && a.status === "Pending Admin Review") {
+      actions += `<button class="btn btn-sm btn-success" onclick="decide(${a.application_id}, 'approve')">Approve</button>
+                  <button class="btn btn-sm btn-danger" onclick="decide(${a.application_id}, 'reject')">Reject</button>`;
+    }
+    html += `<tr><td>${a.application_id}</td><td>${esc(a.full_name)}</td><td>${esc(a.iin)}</td>
+      <td>${money(a.monthly_income)}</td><td>${money(a.requested_amount)}</td><td>${a.term_months}</td>
+      <td>${esc(a.purpose)}</td><td><span class="badge bg-${badge(a.status)}">${esc(a.status)}</span></td>
+      <td>${esc(a.approval_type)}</td><td>${esc(a.reviewed_by || "-")}</td><td>${actions}</td></tr>`;
+  }
+  document.getElementById("apps").innerHTML = html || '<tr><td colspan="11">No applications yet</td></tr>';
+}
+
+async function loadLoans() {
+  const loans = await (await fetch("/api/loans")).json();
+  let html = "";
+  for (const l of loans) {
+    html += `<tr><td>${l.loan_id}</td><td>${l.application_id}</td><td>${esc(l.full_name)}</td>
+      <td>${money(l.approved_amount)}</td><td>${l.interest_rate}%</td><td>${l.issue_date}</td>
+      <td>${l.paid_count} / ${l.payments_count}</td></tr>`;
+  }
+  document.getElementById("loans").innerHTML = html || '<tr><td colspan="7">No loans yet</td></tr>';
+}
+
+async function showChecks(appId) {
+  const checks = await (await fetch(`/api/applications/${appId}/checks`)).json();
+  document.getElementById("checks").innerHTML = checks.map(c =>
+    `<span class="badge bg-${badge(c.result_status)} me-2 p-2">${esc(c.check_type)}: ${esc(c.result_status)}</span>`).join("");
+  document.getElementById("checks-app").textContent = appId;
+  document.getElementById("checks-box").classList.remove("d-none");
+}
+
+// Send the employee's decision, then redraw the tables.
+async function decide(appId, decision) {
+  const response = await fetch(`/api/applications/${appId}/decision`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ employee_id: EMPLOYEE_ID, decision: decision }),
+  });
+  if (!response.ok) alert(JSON.stringify((await response.json()).detail));
+  refresh();
+}
+
+function refresh() { loadApplications(); loadLoans(); }
+refresh();
+setInterval(refresh, 3000);
+</script>
+{% endblock %}

@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-md-5">
+    <h2>Login</h2>
+    {% if registered %}<div class="alert alert-success">Registration successful. Please log in.</div>{% endif %}
+    {% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
+    <form method="post" action="/login" class="card card-body">
+      <label class="form-label">Email (client) or login (employee)</label>
+      <input name="login" class="form-control mb-2" required>
+      <label class="form-label">Password</label>
+      <input name="password" type="password" class="form-control mb-3" required>
+      <button class="btn btn-primary">Log in</button>
+      <p class="mt-2 mb-0">No account? <a href="/register">Register as a client</a></p>
+    </form>
+  </div>
+</div>
+{% endblock %}
