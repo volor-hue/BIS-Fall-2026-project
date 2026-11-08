@@ -1,0 +1,58 @@
+Вариант: Telegram-бот клиента + поиск сотрудника по allowlist + одна команда запуска.
+База прототипа не переписывалась. Удалённый репозиторий не изменялся: нет push, нет PR, нет коммитов.
+
+base_sha: 62dd5f2f9e4840b3742dcbdd69e12d9da26184ef
+base_short: 62dd5f2
+HEAD и origin/main после работы: 62dd5f2f9e4840b3742dcbdd69e12d9da26184ef
+
+Тесты, Python 3.12.3, временные SQLite, mock Bot API, без сети Telegram:
+  tests/test_api.py              13 passed
+  tests/test_approval.py         11 passed
+  tests/test_telegram.py         18 passed
+  tests/test_staff_launcher.py    8 passed
+  итого                          50 passed
+
+Дым API: в тестах GET /openapi.json содержит 18 операций и не содержит telegram.
+
+Изменённые файлы относительно 62dd5f2:
+  mfo-prototype/.gitignore
+  mfo-prototype/README_RUN.md
+  mfo-prototype/database.py
+  mfo-prototype/requirements.txt
+
+Добавленные файлы:
+  mfo-prototype/.env.example
+  mfo-prototype/README_TELEGRAM.md
+  mfo-prototype/TELEGRAM_MANIFEST.txt
+  mfo-prototype/run.py
+  mfo-prototype/telegram_bot.py
+  mfo-prototype/telegram_env.py
+  mfo-prototype/telegram_operator.py
+  mfo-prototype/telegram_service.py
+  mfo-prototype/telegram_staff.py
+  mfo-prototype/telegram_text.py
+  mfo-prototype/tests/test_telegram.py
+  mfo-prototype/tests/test_staff_launcher.py
+
+Не менялись:
+  mfo-prototype/main.py
+  mfo-prototype/approval.py
+  mfo-prototype/docs/ERD.md
+  mfo-prototype/pytest.ini
+  mfo-prototype/tests/conftest.py
+  mfo-prototype/tests/test_api.py
+  mfo-prototype/tests/test_approval.py
+  mfo-prototype/templates/*
+  mfo-prototype/uploads/.gitkeep
+  README.md в корне репозитория
+
+Запуск: python run.py
+Порт сайта по умолчанию: 8001 (MFO_PORT, MFO_HOST)
+Список сотрудников: MFO_TELEGRAM_STAFF_IDS, пусто = /find закрыт
+Свой id: python run.py --bot-only, затем /whoami
+
+Ограничения:
+  - веб-API по-прежнему без авторизации
+  - /find только чтение и только числовые id из allowlist
+  - CLI кодов привязки без пароля
+  - живой Telegram не вызывался

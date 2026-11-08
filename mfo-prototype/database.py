@@ -12,6 +12,12 @@
 #   loan_applications 1--* client_checks (an application "gets" checks)
 #   loan_applications 1--1 loans (an approved application "becomes" a loan)
 #   loans 1--* repayments        (a loan "has" monthly payments)
+#
+# Additive Telegram tables (not part of the business ERD, same mfo.db file):
+#   clients 1--1 telegram_links
+#   clients 1--* telegram_pairing_codes
+#   telegram_link_attempts (keyed by Telegram user id, no client foreign key)
+# init_db() is idempotent: CREATE TABLE IF NOT EXISTS upgrades an existing file.
 # ------------------------------------------------------------
 import hashlib
 import os
@@ -142,6 +148,38 @@ def init_db():
             status     TEXT NOT NULL DEFAULT 'Pending',  -- 'Pending' / 'Paid'
             FOREIGN KEY (loan_id) REFERENCES loans (loan_id) ON DELETE CASCADE
         );
+
+        -- TELEGRAM (additive). Pairing codes are stored only as SHA-256 hashes.
+        -- client_id UNIQUE and telegram_user_id UNIQUE => one client, one Telegram user.
+        CREATE TABLE IF NOT EXISTS telegram_links (
+            link_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id        INTEGER NOT NULL UNIQUE,
+            telegram_user_id INTEGER NOT NULL UNIQUE,
+            linked_at        TEXT NOT NULL,
+            FOREIGN KEY (client_id) REFERENCES clients (client_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS telegram_pairing_codes (
+            code_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id   INTEGER NOT NULL,
+            code_hash   TEXT NOT NULL UNIQUE,
+            created_at  TEXT NOT NULL,
+            expires_at  TEXT NOT NULL,
+            consumed_at TEXT,
+            FOREIGN KEY (client_id) REFERENCES clients (client_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS telegram_link_attempts (
+            attempt_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_user_id INTEGER NOT NULL,
+            attempted_at     TEXT NOT NULL,
+            success          INTEGER NOT NULL CHECK (success IN (0, 1))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_telegram_attempts_user_time
+            ON telegram_link_attempts (telegram_user_id, attempted_at);
+        CREATE INDEX IF NOT EXISTS idx_telegram_attempts_time
+            ON telegram_link_attempts (attempted_at);
     """)
 
     # Create the default employee only if this login does not exist yet.
