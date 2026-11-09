@@ -1,6 +1,7 @@
 # Direct dependencies, pinned together on Python 3.12.3.
 # fastapi/uvicorn/jinja2/python-multipart/pydantic/pytest/httpx: pre-auth web prototype.
 # aiogram 3: Telegram client bot (long polling). It installs aiohttp and related libraries.
+# slowapi + limits: rate limiting (protection from request spam), see rate_limit.py.
 fastapi==0.162.2
 uvicorn==0.54.0
 jinja2==3.1.6
@@ -9,3 +10,5 @@ pydantic==2.13.5
 pytest==9.2.0
 httpx==0.28.1
 aiogram==3.31.0
+slowapi==0.1.10
+limits==5.8.0

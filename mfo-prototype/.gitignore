@@ -10,3 +10,4 @@ mfo.db
 .pytest_cache/
 uploads/*
 !uploads/.gitkeep
+logs/

@@ -32,7 +32,11 @@ def bind_database_path():
     return os.path.abspath(database.DB_FILE)
 
 
-def _apply_env_file(path):
+def read_env_file(path):
+    """Return {key: value} from a .env file without changing os.environ. Missing file -> {}."""
+    values = {}
+    if not os.path.isfile(path):
+        return values
     with open(path, encoding="utf-8") as handle:
         for raw_line in handle:
             line = raw_line.strip()
@@ -48,4 +52,10 @@ def _apply_env_file(path):
             if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
                 value = value[1:-1]
             if key:
-                os.environ.setdefault(key, value)
+                values.setdefault(key, value)  # a repeated key: the first line wins
+    return values
+
+
+def _apply_env_file(path):
+    for key, value in read_env_file(path).items():
+        os.environ.setdefault(key, value)
