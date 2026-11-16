@@ -1,6 +1,6 @@
 # tests/test_face.py
-# The full face check through the API, with a FAKE computer-vision engine (tests/face_fakes.py):
-#   POST /api/face/verify   (step 1: match with the registration photos)
+# The face check before a loan through the API, with a FAKE computer-vision engine (tests/face_fakes.py):
+#   POST /api/face/verify   (step 1: match with the biometrics enrolled at registration)
 #   POST /api/face/liveness (step 2: head turns)
 #   the face gate on POST /api/applications.
 # No real photos and no OpenCV models are needed. The real models are checked by hand (docs/FACE_AUTH_RU.md).
@@ -9,41 +9,32 @@ import io
 import pytest
 
 from conftest import face_token_for
-from face_fakes import FAKE_JPEG, FAKE_PNG, fake_analyze, image
+from face_fakes import FAKE_PNG, image
 
 CLIENT = {"iin": "900101300111", "full_name": "Face Client", "birth_date": "1990-01-01",
           "phone": "+77010000001", "email": "face@test.kz", "password": "face1234",
           "employer_name": "Kaspi", "position": "Dev", "monthly_income": 300000}
 
 
-@pytest.fixture
-def fake_engine(monkeypatch):
-    # Replace the neural networks with made-up faces and record what was analysed.
-    from face_auth import engine
-
-    calls = []
-
-    def analyze(data, label="live", single=True):
-        calls.append(data)
-        return fake_analyze(data, label, single)
-
-    monkeypatch.setattr(engine, "analyze", analyze)
-    return calls
+def frames(field, tags):
+    return [(field, (f"{field}{i}.jpg", image(t), "image/jpeg")) for i, t in enumerate(tags)]
 
 
-def upload(user, client_id, doc_type, tag):
-    r = user.post(f"/api/clients/{client_id}/documents", data={"doc_type": doc_type},
-                  files={"file": (f"{doc_type}.jpg", image(tag), "image/jpeg")})
-    assert r.status_code == 201
+def enroll(api, front=("me",), right=("me", "me_right"), left=("me", "me_left")):
+    # "Пройти биометрию" through the API: start -> frames -> answer (with enrollment_token if passed).
+    start = api.post("/api/face/enroll/start").json()
+    files = frames("frames_front", front) + frames("frames_right", right) + frames("frames_left", left)
+    return api.post("/api/face/enroll/finish", data={"enroll_id": start["enroll_id"]}, files=files)
 
 
 @pytest.fixture
-def person(client, as_user):
-    # A registered client with a 3x4 photo (doc_type "face") and a logged-in TestClient.
-    assert client.post("/api/auth/register", json=CLIENT).status_code == 201
+def person(client, as_user, fake_engine):
+    # A client registered WITH biometrics (straight + right + left) and a logged-in TestClient.
+    token = enroll(client).json()["enrollment_token"]
+    assert client.post("/api/auth/register", json=dict(CLIENT, enrollment_token=token)).status_code == 201
     user = as_user(CLIENT["email"], CLIENT["password"])
     client_id = user.get("/api/auth/me").json()["user_id"]
-    upload(user, client_id, "face", "me")
+    fake_engine.clear()
     return {"api": user, "id": client_id}
 
 
@@ -123,19 +114,16 @@ def test_mirrored_webcam_picture_still_matches(person, fake_engine):
     assert data["match"] is True and data["mirrored"] is True
 
 
-def test_side_photo_is_used_when_it_matches_better(person, fake_engine):
-    # The 3x4 photo is replaced by one that does not look like the webcam face; the side photo does.
-    upload(person["api"], person["id"], "face", "bad_ref")
-    upload(person["api"], person["id"], "face_side", "me_side")
-    data = snapshot(person["api"]).json()
-    assert data["match"] is True and data["best_reference"] == "face_side"
-    assert data["references_used"] == ["face", "face_side"]
+def test_best_of_enrolled_references(person, fake_engine):
+    # If the straight reference does not look like the live face, a turned one still can.
+    from face_auth import storage
+    from face_fakes import ME, unit
 
-
-def test_reference_without_a_face_is_skipped(person, fake_engine):
-    upload(person["api"], person["id"], "face_side", "noface")   # e.g. a real 90-degree profile
+    storage.save_references(person["id"], [
+        {"kind": "front", "embedding": list(unit(7)), "yaw": 0.0},
+        {"kind": "right", "embedding": list(ME), "yaw": -0.35}])
     data = snapshot(person["api"]).json()
-    assert data["match"] is True and data["references_skipped"] == ["face_side"]
+    assert data["match"] is True and data["best_reference"] == "right"
 
 
 def test_not_looking_straight_at_step_1_fails(person, fake_engine):
@@ -239,7 +227,7 @@ def test_too_many_frames_or_bad_frame(person, fake_engine):
 
 # ---------- access, input, logs, pages ----------
 
-def test_face_endpoints_need_login_and_client_role(client, staff, fake_engine):
+def test_face_check_endpoints_need_login_and_client_role(client, staff, fake_engine):
     assert snapshot(client).status_code == 401
     assert snapshot(staff).status_code == 403
     assert turns(staff, "x", GOOD_RIGHT, GOOD_LEFT).status_code == 403
@@ -262,10 +250,12 @@ def test_verify_accepts_base64_png(person, fake_engine):
     assert r.status_code == 200 and r.json()["match"] is True
 
 
-def test_verify_without_3x4_photo_is_404(client, as_user, fake_engine):
+def test_verify_without_biometrics_is_404(client, as_user, fake_engine):
+    # FACE_ENROLL_REQUIRED=0 in the tests: an account without biometrics can exist (like old accounts).
     assert client.post("/api/auth/register", json=CLIENT).status_code == 201
     user = as_user(CLIENT["email"], CLIENT["password"])
-    assert snapshot(user).status_code == 404
+    r = snapshot(user)
+    assert r.status_code == 404 and "Биометрия не пройдена" in r.json()["detail"]
 
 
 def test_face_check_is_audited_without_the_image(person, fake_engine, caplog):
@@ -279,23 +269,7 @@ def test_face_check_is_audited_without_the_image(person, fake_engine, caplog):
     assert token not in lines
 
 
-def test_web_registration_saves_both_photos_and_face_page(client):
-    form = {"full_name": "Web Face", "iin": "900101300333", "phone": "+77010000003",
-            "email": "webface@test.kz", "password": "pass1234", "birth_date": "1990-01-01",
-            "employer_name": "Kaspi", "monthly_income": "300000"}
-    r = client.post("/register", data=form, files={"face_photo": ("me.png", FAKE_PNG, "image/png"),
-                                                   "face_side_photo": ("side.jpg", FAKE_JPEG, "image/jpeg")},
-                    follow_redirects=False)
-    assert r.status_code == 303
-    assert client.get("/face", follow_redirects=False).status_code == 303  # not logged in -> /login
-    client.post("/login", data={"login": "webface@test.kz", "password": "pass1234"})
-    docs = client.get("/api/clients/1/documents").json()
-    assert [d["doc_type"] for d in docs] == ["face", "face_side"]
-    page = client.get("/face").text
-    assert "Проверка лица" in page and "Поверните голову" in page
-    # Photos that are not JPG/PNG are refused.
-    bad = dict(form, iin="900101300444", email="bad@test.kz")
-    r = client.post("/register", data=bad, files={"face_photo": ("me.pdf", b"%PDF", "application/pdf")})
-    assert r.status_code == 400
-    r = client.post("/register", data=bad, files={"face_side_photo": ("s.pdf", b"%PDF", "application/pdf")})
-    assert r.status_code == 400
+def test_face_page(person, client):
+    assert client.get("/face", follow_redirects=False).status_code == 303   # not logged in -> /login
+    page = person["api"].get("/face").text
+    assert "Проверка лица" in page and "Поверните голову" in page and "Начать проверку" in page

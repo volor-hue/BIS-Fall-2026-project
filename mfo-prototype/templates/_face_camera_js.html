@@ -1,0 +1,84 @@
+<script>
+// FaceCam: shared camera helpers (register.html and face.html).
+// The SERVER decides everything (order of turns, pass/fail). The page only shows
+// instructions and sends pictures.
+const FaceCam = (() => {
+  const FRAMES_PER_TURN = 8;     // frames recorded during one head turn
+  const FRAME_GAP_MS = 250;      // 8 x 250 ms = 2 seconds per turn
+  const TURN_TEXT = { right: "Поверните голову вправо →", left: "← Поверните голову влево" };
+  const video = document.getElementById("video");
+  const canvas = document.getElementById("canvas");
+  const instruction = document.getElementById("instruction");
+  const progress = document.getElementById("progress");
+  const sleep = (ms) => new Promise(ok => setTimeout(ok, ms));
+  const say = (text) => instruction.textContent = text;
+  const setProgress = (part) => progress.style.width = Math.round(part * 100) + "%";
+
+  // Turn on the webcam (once).
+  async function open() {
+    if (video.srcObject) return;
+    video.srcObject = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+    await new Promise(ok => video.videoWidth ? ok() : (video.onloadedmetadata = ok));
+    await video.play();   // some browsers do not autoplay -> without this every frame is black
+  }
+
+  // One frame from the RAW camera picture (drawImage does not apply the CSS mirror) -> JPEG blob.
+  async function grab() {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext("2d").drawImage(video, 0, 0);
+    return await new Promise(ok => canvas.toBlob(ok, "image/jpeg", 0.85));
+  }
+
+  // "Look straight": `count` frames into form field `field`.
+  async function captureStraight(form, field, count) {
+    say("Смотрите прямо в камеру");
+    await sleep(1200);
+    for (let i = 0; i < count; i++) {
+      form.append(field, await grab(), `front${i}.jpg`);
+      await sleep(300);
+    }
+  }
+
+  // The head turns in the order the SERVER chose: frames go to frames_right / frames_left.
+  async function captureTurns(steps, form, from, to) {
+    for (let s = 0; s < steps.length; s++) {
+      const direction = steps[s];
+      say(TURN_TEXT[direction]);
+      for (let i = 0; i < FRAMES_PER_TURN; i++) {
+        await sleep(FRAME_GAP_MS);
+        form.append("frames_" + direction, await grab(), `${direction}${i}.jpg`);
+        setProgress(from + (to - from) * (s * FRAMES_PER_TURN + i + 1) / (steps.length * FRAMES_PER_TURN));
+      }
+      say("Смотрите прямо");
+      await sleep(900);
+    }
+  }
+
+  async function post(url, form) {
+    const response = await fetch(url, { method: "POST", body: form });
+    const data = await response.json();
+    if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail));
+    return data;
+  }
+
+  // The whole "Пройти биометрию": start -> straight -> turns -> finish. Returns the server answer.
+  async function enroll() {
+    await open();
+    setProgress(0);
+    const start = await post("/api/face/enroll/start", new FormData());
+    const form = new FormData();
+    form.append("enroll_id", start.enroll_id);
+    await captureStraight(form, "frames_front", 3);
+    setProgress(0.15);
+    await captureTurns(start.steps, form, 0.15, 0.9);
+    say("Проверяю...");
+    const result = await post("/api/face/enroll/finish", form);
+    setProgress(result.passed ? 1 : 0);
+    say(result.passed ? "Биометрия пройдена ✔" : "Не получилось");
+    return result;
+  }
+
+  return { open, grab, say, sleep, setProgress, captureTurns, post, enroll };
+})();
+</script>

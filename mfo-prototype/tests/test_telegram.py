@@ -702,7 +702,7 @@ def test_link_flow_and_payment_status_from_api(staff):
     assert second["status"] == "Pending"
 
 
-def test_openapi_stays_23_operations_without_telegram(client):
+def test_openapi_stays_25_operations_without_telegram(client):
     spec = client.get("/openapi.json").json()
     operations = {
         (method, path)
@@ -734,8 +734,10 @@ def test_openapi_stays_23_operations_without_telegram(client):
         ("get", "/api/auth/me"),
         ("post", "/api/face/verify"),
         ("post", "/api/face/liveness"),
+        ("post", "/api/face/enroll/start"),
+        ("post", "/api/face/enroll/finish"),
     }
-    assert len(operations) == 23
+    assert len(operations) == 25
     blob = str(spec).lower()
     assert "telegram" not in blob and "pairing" not in blob
     assert client.get("/docs").status_code == 200

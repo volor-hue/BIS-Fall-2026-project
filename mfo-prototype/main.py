@@ -47,7 +47,6 @@ UPLOAD_DIR = "uploads"
 # Face check: all the code is in the face_auth/ package (see docs/FACE_AUTH_RU.md).
 # After the webcam check (face match + head turns) the client gets a ONE-TIME face_token.
 # POST /api/applications from a client needs it (face_auth.require_fresh_face_token below).
-FACE_PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".png")
 
 # Create the tables and the default employee when the app starts.
 database.init_db()
@@ -102,6 +101,9 @@ class RegisterIn(ClientIn):
     employer_name: str = Field("", examples=["Kaspi Bank"])
     position: str = Field("", examples=["Analyst"])
     monthly_income: float = Field(0, ge=0, examples=[300000])
+    # One-time token from POST /api/face/enroll/finish ("Пройти биометрию"). Required for clients
+    # unless FACE_ENROLL_REQUIRED=0.
+    enrollment_token: Optional[str] = Field(None, max_length=200)
 
 
 # ============================================================
@@ -341,6 +343,10 @@ async def log_requests(request: Request, call_next):
 @limiter.limit(AUTH_LIMIT)
 def api_register(body: RegisterIn, request: Request):
     # Registration through the API: creates the client (+ job) and returns a JWT right away.
+    biometrics_error = face_auth.registration_biometrics_error(body.enrollment_token)
+    if biometrics_error:
+        audit("register_failed", request, logging.WARNING, via="api_jwt", reason="no_biometrics")
+        raise HTTPException(400, biometrics_error)
     try:
         client_id = database.create_client(body.iin, body.full_name, body.birth_date, body.phone,
                                            body.address, body.email.strip().lower(), body.password,
@@ -348,6 +354,10 @@ def api_register(body: RegisterIn, request: Request):
     except sqlite3.IntegrityError:
         audit("register_failed", request, logging.WARNING, via="api_jwt", reason="duplicate")
         raise HTTPException(400, "Client with this IIN or email already exists")
+    if not face_auth.attach_registration_biometrics(body.enrollment_token, client_id):
+        database.delete_client(client_id)   # the biometrics expired in the meantime: undo
+        audit("register_failed", request, logging.WARNING, via="api_jwt", reason="no_biometrics")
+        raise HTTPException(400, face_auth.gate.BIOMETRICS_EXPIRED)
     if body.employer_name.strip():
         database.create_employment(client_id, body.employer_name, body.position, body.monthly_income)
     audit("register_ok", request, via="api_jwt", client_id=client_id)
@@ -577,7 +587,7 @@ def api_pay(payment_id: int, request: Request, user: dict = Depends(require_user
 
 
 # ---------- face verification (computer vision) ----------
-# /api/face/verify, /api/face/liveness and the /face page live in face_auth/router.py.
+# /api/face/enroll/*, /api/face/verify, /api/face/liveness and the /face page live in face_auth/router.py.
 # They use the same JWT login helpers as the rest of the API.
 app.include_router(face_auth.create_router(authenticate=authenticate, current_client_id=current_client_id,
                                            oauth2_scheme=oauth2_scheme, templates=templates))
@@ -598,7 +608,8 @@ def home(request: Request):
 
 @app.get("/register", include_in_schema=False)
 def register_page(request: Request):
-    return templates.TemplateResponse(request, "register.html", {"error": None})
+    return templates.TemplateResponse(request, "register.html", {"error": None, "enrollment_token": "",
+                                       "enroll_required": face_auth.config.ENROLL_REQUIRED})
 
 
 @app.post("/register", include_in_schema=False)
@@ -609,15 +620,11 @@ def register(
     email: str = Form(...), password: str = Form(...), address: str = Form(""),
     birth_date: str = Form(""), marital_status: str = Form("Single"),
     employer_name: str = Form(...), position: str = Form(""), monthly_income: float = Form(...),
-    passport_photo: UploadFile = File(None), face_photo: UploadFile = File(None),
-    face_side_photo: UploadFile = File(None),
+    passport_photo: UploadFile = File(None), enrollment_token: str = Form(""),
 ):
     iin = iin.strip()
     error = None
     reason = None  # short code for the log (we never log the IIN or the e-mail itself)
-    has_face = face_photo is not None and bool(face_photo.filename)
-    # Optional second reference photo for the face check: the face from the side.
-    has_side = face_side_photo is not None and bool(face_side_photo.filename)
     # Check 1: IIN must be exactly 12 characters and all of them digits.
     if len(iin) != 12 or not iin.isdigit():
         error = "IIN must contain exactly 12 digits."
@@ -626,36 +633,39 @@ def register(
     elif monthly_income < 0:
         error = "Monthly income cannot be negative."
         reason = "negative_income"
-    # Check 3: the 3x4 photo (used by the face check) must be a JPG or PNG.
-    elif has_face and not face_photo.filename.lower().endswith(FACE_PHOTO_EXTENSIONS):
-        error = "The 3x4 photo must be a JPG or PNG file."
-        reason = "bad_face_photo"
-    elif has_side and not face_side_photo.filename.lower().endswith(FACE_PHOTO_EXTENSIONS):
-        error = "The side photo must be a JPG or PNG file."
-        reason = "bad_face_side_photo"
+    # Check 3: the biometrics ("Пройти биометрию") must be done (see face_auth/gate.py).
+    elif face_auth.registration_biometrics_error(enrollment_token):
+        error = face_auth.registration_biometrics_error(enrollment_token)
+        reason = "no_biometrics"
 
     client_id = None
     if error is None:
         try:
-            # One registration fills THREE tables: clients, employment, documents.
+            # One registration fills the tables clients, employment, documents (+ face_references).
             client_id = database.create_client(iin, full_name, birth_date, phone, address,
                                                email.strip().lower(), password, marital_status, now_text())
         except sqlite3.IntegrityError:
             error = "A client with this IIN or email already exists."
             reason = "duplicate"
+    # The face vectors of the enrollment now belong to this client (one-time token).
+    if error is None and not face_auth.attach_registration_biometrics(enrollment_token, client_id):
+        database.delete_client(client_id)   # the biometrics expired in the meantime: undo
+        error = face_auth.gate.BIOMETRICS_EXPIRED
+        reason = "no_biometrics"
 
     if error is not None:
         audit("register_failed", request, logging.WARNING, via="web", reason=reason)
-        return templates.TemplateResponse(request, "register.html", {"error": error}, status_code=400)
+        # A still valid biometric enrollment is kept, so the user does not have to turn the head again.
+        kept = enrollment_token if face_auth.registration_biometrics_error(enrollment_token) is None else ""
+        return templates.TemplateResponse(request, "register.html",
+                                          {"error": error, "enrollment_token": kept,
+                                           "enroll_required": face_auth.config.ENROLL_REQUIRED},
+                                          status_code=400)
 
     database.create_employment(client_id, employer_name, position, monthly_income)
     audit("register_ok", request, via="web", client_id=client_id)
     if passport_photo is not None and passport_photo.filename:
         save_document(client_id, "passport", passport_photo)
-    if has_face:
-        save_document(client_id, "face", face_photo)
-    if has_side:
-        save_document(client_id, "face_side", face_side_photo)
     return RedirectResponse("/login?registered=1", status_code=303)
 
 

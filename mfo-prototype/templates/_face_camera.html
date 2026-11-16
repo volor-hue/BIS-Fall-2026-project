@@ -1,0 +1,11 @@
+{# Camera box shared by register.html ("Пройти биометрию") and face.html (check before a loan). #}
+<style>
+  /* The PREVIEW is mirrored (like a mirror, easier to follow "turn right").
+     The frames sent to the server are taken from the raw camera picture, NOT mirrored. */
+  #video { transform: scaleX(-1); }
+  #instruction { font-size: 1.6rem; min-height: 2.4rem; }
+</style>
+<div id="instruction" class="text-center fw-bold mb-2">{{ first_instruction }}</div>
+<video id="video" autoplay playsinline muted class="w-100 bg-dark rounded"></video>
+<canvas id="canvas" class="d-none"></canvas>
+<div class="progress mt-3" style="height: 8px;"><div id="progress" class="progress-bar" style="width: 0%"></div></div>

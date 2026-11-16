@@ -34,7 +34,7 @@ def flag(name, default):
 MODEL_DIR = setting("FACE_MODEL_DIR", os.path.join(PROJECT_DIR, "models"))
 DETECT_SCORE = 0.8   # how sure YuNet must be that a box is a face
 # Big photos are shrunk to this size first: faster, and YuNet is MORE sure on a medium-size face
-# (a close-up 3x4 photo at full resolution can get a detector score below DETECT_SCORE).
+# (a close-up face at full resolution can get a detector score below DETECT_SCORE).
 MAX_SIDE = 640
 
 # ---------- step 1: "is it the same person as on the registration photo?" ----------
@@ -61,6 +61,13 @@ MAX_FRAMES = 12      # frames per step the server accepts (the browser sends 8)
 # Set to 1 only if YOUR camera driver already mirrors the picture (left and right swapped).
 # The browser page sends raw (not mirrored) frames, so normally this stays 0.
 CAMERA_MIRRORED = flag("FACE_CAMERA_MIRRORED", False)
+
+# ---------- biometric enrollment at registration ----------
+# 1 = a client can register only after "Пройти биометрию" (web form and /api/auth/register).
+# The automatic tests set 0, so the teammates' registration tests do not need a camera.
+ENROLL_REQUIRED = flag("FACE_ENROLL_REQUIRED", True)
+# After a successful enrollment the registration form must be sent within this many minutes.
+ENROLL_TOKEN_MINUTES = number("FACE_ENROLL_TOKEN_MINUTES", 15, 1, 60, int)
 
 # ---------- the one-time token for the loan application ----------
 TOKEN_MINUTES = number("FACE_TOKEN_MINUTES", 5, 1, 60, int)

@@ -1,45 +1,119 @@
 # face_auth/service.py
 # ------------------------------------------------------------
-# The whole face check as two steps (the web layer is in router.py):
+# The face check as plain functions (the web layer is in router.py).
 #
-#   STEP 1  start_check():   webcam snapshot "look straight" vs ALL registration photos
-#                            (3x4 + optional side photo), normal and mirrored -> best score.
-#                            score >= FACE_THRESHOLD -> the server creates a head-turn challenge.
-#   STEP 2  finish_check():  frames recorded while the person turned RIGHT and LEFT
-#                            (random order). For every frame: same person? how far did the nose move?
-#                            Both turns OK -> the one-time face_token is issued (router.py).
+#   ENROLLMENT (registration, "Пройти биометрию"):
+#     enroll():        frames "look straight" + frames of the head turns (random order).
+#                      Live single face, same person everywhere, real turns ->
+#                      3 references are kept: straight, best right-turn, best left-turn frame.
+#
+#   LOAN CHECK (before every application):
+#     start_check():   "look straight" snapshot vs ALL enrolled references, normal and mirrored
+#                      -> best score >= FACE_THRESHOLD -> the server creates a head-turn challenge.
+#     finish_check():  frames of the turns RIGHT and LEFT -> both OK -> face_token (router.py).
 #
 # Nothing here is saved to disk: images are only in memory during the request.
+# Only the 128-number vectors (not pictures) of the enrollment are stored (storage.py).
 # ------------------------------------------------------------
 from face_auth import config, engine, liveness, matching
 from face_auth.engine import FaceError, FaceSample, ManyFacesError
 
 
-def load_references(reference_files):
-    """reference_files: list of (kind, path). Photos without a detectable face are SKIPPED
-    (a real profile photo is often not found by YuNet, which is trained on frontal faces)."""
-    references, skipped = [], []
-    for kind, path in reference_files:
+def vector_sample(embedding):
+    """A stored 128-number vector as a FaceSample (only .embedding is used for comparing)."""
+    import numpy as np
+    vector = np.asarray(embedding, dtype=float)
+    return FaceSample(landmarks=[], embedding=vector, embedding_mirrored=vector)
+
+
+def references_from_db(rows):
+    """storage.get_references() rows -> [(kind, FaceSample), ...] for matching.best_match."""
+    return [(row["kind"], vector_sample(row["embedding"])) for row in rows]
+
+
+def as_reference(kind, sample):
+    """FaceSample -> the dict that storage.py saves (vector + yaw, no picture)."""
+    return {"kind": kind, "embedding": [round(float(x), 6) for x in sample.embedding],
+            "yaw": round(liveness.yaw_offset(sample.landmarks), 4)}
+
+
+class TurnsFailed(Exception):
+    def __init__(self, reason, steps):
+        super().__init__(reason)
+        self.reason, self.steps = reason, steps
+
+
+def check_turns(steps, baseline_yaw, identity_refs, frames_by_step):
+    """Shared by enrollment and the loan check.
+    For each requested direction: every frame -> one face? yaw? same person as identity_refs?
+    Returns (step_results, best_frame_per_direction). Raises TurnsFailed."""
+    results, best = [], {}
+    for direction in steps:
+        measured, samples = [], []   # (yaw, same_person_score) and the FaceSample of every frame with a face
+        for frame in frames_by_step.get(direction) or []:
+            try:
+                sample = engine.analyze(frame, label="кадр поворота")
+            except ManyFacesError as error:   # a second person appeared: fail at once
+                raise TurnsFailed(str(error), [r.as_dict() for r in results])
+            except FaceError:
+                continue  # head turned so far that the face is not found - just skip this frame
+            measured.append((liveness.yaw_offset(sample.landmarks),
+                             matching.best_match(sample, identity_refs).score))
+            samples.append(sample)
+        step = liveness.check_step(direction, baseline_yaw, measured)
+        results.append(step)
+        if not step.passed:
+            raise TurnsFailed(step.reason, [r.as_dict() for r in results])
+        # The frame turned the most in the requested direction becomes this side's reference.
+        sign = liveness.direction_sign(direction)
+        best[direction] = max(samples, key=lambda s: (liveness.yaw_offset(s.landmarks) - baseline_yaw) * sign)
+    return results, best
+
+
+# =============== ENROLLMENT ===============
+
+def enroll(steps, front_frames, frames_by_step):
+    """Returns {"passed", "reason", "steps", "references"} (references only if passed)."""
+    fail = lambda reason, done=(): {"passed": False, "reason": reason, "steps": list(done)}
+    fronts = []
+    for frame in front_frames:
         try:
-            references.append((kind, engine.analyze(path, label=kind, single=False)))
+            fronts.append(engine.analyze(frame, label="снимок «смотрите прямо»"))
+        except ManyFacesError as error:
+            return fail(str(error))
         except FaceError:
-            skipped.append(kind)
-    return references, skipped
+            continue
+    if not fronts:
+        return fail("лицо не найдено. Сядьте лицом к камере, при хорошем свете")
+    # The most straight frame is the main reference.
+    anchor = min(fronts, key=lambda s: abs(liveness.yaw_offset(s.landmarks)))
+    yaw = liveness.yaw_offset(anchor.landmarks)
+    ok, reason = liveness.check_frontal(yaw)
+    if not ok:
+        return fail(reason)
+    identity = [("front", anchor)]
+    for other in fronts:   # the other straight frames must be the same person too
+        if matching.best_match(other, identity).score < config.TURN_SAME_PERSON:
+            return fail("в кадрах «смотрите прямо» разные лица")
+    try:
+        results, best = check_turns(steps, yaw, identity, frames_by_step)
+    except TurnsFailed as failed:
+        return fail(failed.reason, failed.steps)
+    references = [as_reference("front", anchor)] + [as_reference(d, best[d]) for d in liveness.DIRECTIONS]
+    return {"passed": True, "reason": "биометрия пройдена: лицо и повороты головы сохранены",
+            "steps": [r.as_dict() for r in results], "references": references}
 
 
-def start_check(reference_files, live_image, threshold=None):
-    """STEP 1. Returns a dict for the API. If it matched, result["anchor"] holds what the
-    server must remember for step 2 (router.py stores it and removes it from the answer)."""
+# =============== LOAN CHECK ===============
+
+def start_check(references, live_image, threshold=None):
+    """STEP 1. references: [(kind, FaceSample)] from references_from_db().
+    If it matched, result["anchor"] holds what the server must remember for step 2
+    (router.py stores it and removes it from the answer)."""
     threshold = config.COSINE_THRESHOLD if threshold is None else threshold
     result = {"match": False, "score": None, "threshold": threshold}
-    references, skipped = load_references(reference_files)
-    result["references_used"] = [kind for kind, _ in references]
-    result["references_skipped"] = skipped
-    if not references:
-        result["reason"] = "на фото из регистрации не найдено лицо. Загрузите чёткое фото 3x4"
-        return result
     try:
-        live = engine.analyze(live_image, label="снимок с камеры", single=True)
+        live = engine.analyze(live_image, label="снимок с камеры")
     except FaceError as error:
         result["reason"] = str(error)
         return result
@@ -61,37 +135,15 @@ def start_check(reference_files, live_image, threshold=None):
     return result
 
 
-def same_person_score(sample, anchor_sample, references):
-    """Best similarity of one turned frame with the straight webcam frame or any registration photo."""
-    return matching.best_match(sample, [("camera", anchor_sample)] + references).score
-
-
-def finish_check(challenge, reference_files, frames_by_step):
+def finish_check(challenge, references, frames_by_step):
     """STEP 2. challenge = {"steps": [...], "anchor": {...}} from storage.consume_challenge.
-    frames_by_step = {"right": [bytes, ...], "left": [bytes, ...]}.
+    references: [(kind, FaceSample)]. frames_by_step = {"right": [bytes, ...], "left": [bytes, ...]}.
     Returns {"passed", "reason", "steps": [...]}."""
-    import numpy as np
     anchor = challenge["anchor"]
-    vector = np.asarray(anchor["embedding"], dtype=float)
-    anchor_sample = FaceSample(landmarks=[], embedding=vector, embedding_mirrored=vector)
-    references, _ = load_references(reference_files)
-
-    results = []
-    for direction in challenge["steps"]:
-        measured = []   # (yaw, same_person_score) of every frame with a face
-        for frame in frames_by_step.get(direction) or []:
-            try:
-                sample = engine.analyze(frame, label="кадр поворота", single=True)
-            except ManyFacesError as error:   # a second person appeared: fail at once
-                return {"passed": False, "reason": str(error), "steps": [r.as_dict() for r in results]}
-            except FaceError:
-                continue  # head turned so far that the face is not found - just skip this frame
-            measured.append((liveness.yaw_offset(sample.landmarks),
-                             same_person_score(sample, anchor_sample, references)))
-        step = liveness.check_step(direction, anchor["yaw"], measured)
-        results.append(step)
-        if not step.passed:
-            break
-    passed = len(results) == len(challenge["steps"]) and all(r.passed for r in results)
-    reason = "живой человек: оба поворота головы подтверждены" if passed else results[-1].reason
-    return {"passed": passed, "reason": reason, "steps": [r.as_dict() for r in results]}
+    identity = [("camera", vector_sample(anchor["embedding"]))] + list(references)
+    try:
+        results, _ = check_turns(challenge["steps"], anchor["yaw"], identity, frames_by_step)
+    except TurnsFailed as failed:
+        return {"passed": False, "reason": failed.reason, "steps": failed.steps}
+    return {"passed": True, "reason": "живой человек: оба поворота головы подтверждены",
+            "steps": [r.as_dict() for r in results]}

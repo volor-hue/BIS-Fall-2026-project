@@ -30,10 +30,10 @@ mfo-prototype/
 │   ├── engine.py        # OpenCV: YuNet находит лицо и 5 точек, SFace делает вектор из 128 чисел
 │   ├── matching.py      # косинусное сходство, лучшее из всех фото, обычный и зеркальный кадр
 │   ├── liveness.py      # математика поворота головы (защита от фото на телефоне)
-│   ├── service.py       # шаг 1 (сравнение с фото) и шаг 2 (повороты головы)
-│   ├── storage.py       # таблицы face_challenges и face_tokens (одноразовые, только хэши)
-│   ├── gate.py          # без face_token заявку не принять (403)
-│   └── router.py        # /api/face/verify, /api/face/liveness, страница /face
+│   ├── service.py       # биометрия при регистрации, шаг 1 (сравнение) и шаг 2 (повороты головы)
+│   ├── storage.py       # таблицы face_enrollments, face_references, face_challenges, face_tokens
+│   ├── gate.py          # без face_token заявку не принять (403), без биометрии не зарегистрироваться
+│   └── router.py        # /api/face/enroll/*, /api/face/verify, /api/face/liveness, страница /face
 ├── run.py               # одна команда: сайт (127.0.0.1:8001) + Telegram-бот
 ├── telegram_*.py        # Telegram-бот клиента (см. README_TELEGRAM.md)
 ├── .env.example         # образец .env: токен бота, лимиты запросов (скопировать в .env)
@@ -44,7 +44,8 @@ mfo-prototype/
 │   └── FACE_AUTH_RU.md  # как работает проверка лица (для защиты)
 ├── templates/           # HTML-страницы
 │   ├── base.html        # общий шаблон (меню, Bootstrap, JS-помощники)
-│   ├── register.html    # регистрация (clients + employment + documents)
+│   ├── register.html    # регистрация (clients + employment + documents) + «Пройти биометрию»
+│   ├── _face_camera.html, _face_camera_js.html  # общая камера для регистрации и /face
 │   ├── login.html       # вход клиента (email) или сотрудника (login)
 │   ├── dashboard.html   # кабинет клиента: заявки, кредиты, график, оплата
 │   ├── face.html        # веб-камера: смотрите прямо -> поверните голову вправо/влево -> отправка заявки
@@ -59,6 +60,7 @@ mfo-prototype/
 │   ├── test_access.py   # тесты доступа: 401 без токена, 403 к чужим данным, права сотрудника
 │   ├── test_face.py     # тесты проверки лица через API и face-гейта (без настоящих фото, нейросети подменяются)
 │   ├── test_face_liveness.py # тесты математики поворота, зеркала, лучшего из фото (выдуманные точки)
+│   ├── test_face_enroll.py # тесты биометрии при регистрации
 │   ├── face_fakes.py    # выдуманные «лица» для тестов
 │   └── test_telegram.py, test_staff_launcher.py  # тесты бота и run.py
 ├── models/              # создаётся сама: модели YuNet + SFace (в git не попадает)
@@ -72,7 +74,7 @@ mfo-prototype/
 ## База данных (по ERD команды)
 
 8 таблиц: `clients`, `employees`, `employment`, `documents`, `loan_applications`, `client_checks`, `loans`, `repayments`.
-Плюс служебные таблицы вне ERD: `face_challenges` и `face_tokens` (задание на поворот головы и одноразовый токен проверки лица, хранится только SHA-256; создаёт `face_auth/storage.py`) и таблицы Telegram-бота (`telegram_links`, `telegram_pairing_codes`, `telegram_link_attempts`).
+Плюс служебные таблицы вне ERD: `face_enrollments`, `face_references` (биометрия: 3 вектора лица клиента, без картинок), `face_challenges` и `face_tokens` (задание на поворот головы и одноразовый токен проверки лица, хранится только SHA-256; создаёт `face_auth/storage.py`) и таблицы Telegram-бота (`telegram_links`, `telegram_pairing_codes`, `telegram_link_attempts`).
 Диаграмма и все связи описаны в [`docs/ERD.md`](docs/ERD.md).
 
 **Что мы добавили к ERD** (это отмечено и в комментариях в `database.py`):
@@ -169,7 +171,9 @@ python run.py --web-only   # только сайт
 | GET | `/api/loans/{loan_id}` | loans | один кредит (сколько платежей оплачено) |
 | GET | `/api/loans/{loan_id}/repayments` | repayments | график платежей |
 | POST | `/api/repayments/{payment_id}/pay` | repayments | отметить платёж как Paid |
-| POST | `/api/face/verify` | documents, face_challenges | шаг 1: снимок «смотрите прямо» (form-data `file` или `image_base64`) сравнивается с фото 3x4 и фото сбоку; при совпадении выдаётся задание `challenge_id` + порядок поворотов `steps` |
+| POST | `/api/face/enroll/start` | face_enrollments | «Пройти биометрию» при регистрации: `enroll_id` + случайный порядок поворотов `steps` (вход не нужен) |
+| POST | `/api/face/enroll/finish` | face_enrollments, face_references | кадры «прямо» и поворотов (`enroll_id`, `frames_front`, `frames_right`, `frames_left`); если живой человек — одноразовый `enrollment_token` для регистрации |
+| POST | `/api/face/verify` | face_references, face_challenges | шаг 1: снимок «смотрите прямо» (form-data `file` или `image_base64`) сравнивается с биометрией клиента; при совпадении выдаётся задание `challenge_id` + порядок поворотов `steps` |
 | POST | `/api/face/liveness` | face_challenges, face_tokens | шаг 2: кадры поворотов (`challenge_id`, `frames_right`, `frames_left`); если повороты настоящие, выдаётся одноразовый `face_token` |
 
 > **Face-гейт:** клиент может подать заявку (`POST /api/applications`) только с полем `face_token` из успешной
@@ -182,8 +186,8 @@ python run.py --web-only   # только сайт
 1. http://127.0.0.1:8000/register: зарегистрируйте клиента
    - IIN `050101500123`, Birth date `2005-01-01`, Email `client@test.kz`, Password `pass123`;
    - Employer `Kaspi`, **Monthly income `300000`**, приложите любую картинку как паспорт
-     и **своё фото 3x4** (JPG/PNG) в поле «Photo 3x4» — с ним будет сравниваться веб-камера.
-     По желанию: фото лица сбоку (голова повёрнута на 30-45°) в поле «Side photo».
+     и нажмите **«Пройти биометрию»** (разрешите доступ к камере): смотрите прямо, потом поверните голову
+     вправо и влево по подсказке. Без биометрии регистрация не пройдёт.
    - Проверка ошибки: с IIN `123` появится сообщение «exactly 12 digits».
 2. Войдите как `client@test.kz` / `pass123`.
 3. Каждая заявка: **Submit application** → страница `/face` (разрешите доступ к камере) → **Начать проверку**.

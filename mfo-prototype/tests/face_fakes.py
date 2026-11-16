@@ -38,25 +38,18 @@ FACES = {
     "me_right": (-0.35, unit(0, (1, 0.6)), unit(5)),     # the person turned to THEIR right
     "me_left": (0.35, unit(0, (2, 0.6)), unit(5)),
     "me_slight_right": (-0.08, ME, unit(5)),            # a tiny wobble, not a real turn
-    "me_side": (0.0, ME, unit(5)),                      # the registration side photo
     "me_mirrored": (0.0, unit(6), ME),                  # a mirrored webcam picture of me
     "me_not_straight": (0.4, ME, unit(5)),
     "other": (0.0, unit(3), unit(4)),
     "other_right": (-0.35, unit(3), unit(4)),
-    "bad_ref": (0.0, unit(7), unit(8)),                 # a reference that does not look like me
 }
 
 
-def fake_analyze(data, label="live", single=True):
-    if not isinstance(data, bytes):          # a path of an uploaded registration photo
-        with open(data, "rb") as f:
-            data = f.read()
+def fake_analyze(data, label="live"):
     tag = data.split(b"|")[-1].decode(errors="ignore") if b"|" in data else "me"
     if tag == "noface":
         raise FaceError(f"лицо не найдено ({label})")
     if tag == "two":
-        if single:
-            raise ManyFacesError(f"в кадре 2 лица ({label})")
-        tag = "me"
+        raise ManyFacesError(f"в кадре 2 лица ({label})")
     yaw, embedding, mirrored = FACES[tag]
     return FaceSample(landmarks=landmarks(yaw), embedding=embedding, embedding_mirrored=mirrored)

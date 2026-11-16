@@ -113,13 +113,13 @@ def test_mirrored_live_face_uses_the_flipped_embedding():
 
 
 def test_best_of_several_references():
-    refs = [("face", sample("bad_ref")), ("face_side", sample("me_side"))]
+    refs = [("front", sample("other")), ("right", sample("me_right")), ("left", sample("me"))]
     best = matching.best_match(sample("me"), refs)
-    assert best.reference == "face_side" and best.score == pytest.approx(1.0)
+    assert best.reference == "left" and best.score == pytest.approx(1.0)
 
 
 def test_other_person_is_low_against_every_reference():
-    refs = [("face", sample("me")), ("face_side", sample("me_side"))]
+    refs = [("front", sample("me")), ("right", sample("me_right")), ("left", sample("me_left"))]
     assert matching.best_match(sample("other"), refs).score < 0.363
 
 

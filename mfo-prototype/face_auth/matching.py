@@ -4,7 +4,7 @@
 #   cos = (a . b) / (|a| * |b|)     1.0 = same direction, ~0 = unrelated
 #
 # Best of everything:
-#   - the client may have several reference photos (straight 3x4 + optional side photo);
+#   - the client has several references from the enrollment (straight + turned right + turned left);
 #   - the webcam picture may be mirrored.
 # We compare the live face (normal AND flipped) with every reference and keep the highest score.
 # A different person stays low for every pair, so taking the best one is safe.
@@ -23,7 +23,7 @@ def cosine(a, b):
 @dataclass
 class Match:
     score: float       # best cosine similarity found
-    reference: str     # which reference gave it, e.g. "face" or "face_side"
+    reference: str     # which reference gave it, e.g. "front", "right", "left"
     mirrored: bool     # True = the flipped live face matched better
 
 

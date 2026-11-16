@@ -96,12 +96,9 @@ def load_image(data):
     return image
 
 
-def analyze(data, label="live", single=True):
+def analyze(data, label="live"):
     """Find the face, return a FaceSample (5 points + embedding + mirrored embedding).
-
-    single=True  (webcam frames): exactly one person must be in the frame.
-    single=False (registration photos): take the biggest face.
-    Raises FaceError with a human-readable reason."""
+    Exactly one person must be in the frame. Raises FaceError with a human-readable reason."""
     import cv2
     import numpy as np
     image = load_image(data)
@@ -115,9 +112,9 @@ def analyze(data, label="live", single=True):
         # Ignore tiny background faces (< 30% of the biggest face's width).
         biggest = max(f[2] for f in faces)
         faces = [f for f in faces if f[2] >= 0.3 * biggest]
-        if single and len(faces) > 1:
+        if len(faces) > 1:
             raise ManyFacesError(f"в кадре {len(faces)} лица ({label}) - в кадре должен быть один человек")
-        face = max(faces, key=lambda f: f[2])
+        face = faces[0]
         aligned = recognizer.alignCrop(image, face)          # rotate/crop by the eyes -> 112x112
         embedding = recognizer.feature(aligned).flatten()
         mirrored = recognizer.feature(cv2.flip(aligned, 1)).flatten()  # 1 = flip left <-> right

@@ -39,16 +39,64 @@
       </div>
       <h5 class="mt-4">Passport <small class="text-muted">(table: documents, file saved to uploads/)</small></h5>
       <input name="passport_photo" type="file" accept="image/*,.pdf" class="form-control">
-      <h5 class="mt-4">Photo 3x4 <small class="text-muted">(for the webcam face check, documents.doc_type = "face")</small></h5>
-      <input name="face_photo" type="file" accept=".jpg,.jpeg,.png" class="form-control">
-      <small class="text-muted">JPG or PNG, one face, looking at the camera. Needed to apply for a loan.</small>
-      <h5 class="mt-4">Side photo <small class="text-muted">(optional, documents.doc_type = "face_side")</small></h5>
-      <input name="face_side_photo" type="file" accept=".jpg,.jpeg,.png" class="form-control">
-      <small class="text-muted">JPG or PNG, the face from the side (head turned about 30-45&deg;, both eyes visible).
-        Optional: the webcam check compares you with every photo and takes the best match.</small>
-      <button class="btn btn-primary mt-4">Register</button>
+      <h5 class="mt-4">Биометрия <small class="text-muted">(вместо фото 3x4: лицо снимается камерой, table: face_references)</small></h5>
+      <input type="hidden" name="enrollment_token" id="enrollment_token" value="{{ enrollment_token or '' }}">
+      <p class="text-muted mb-2">Нажмите кнопку, смотрите прямо в камеру, потом поверните голову вправо и влево по подсказке.
+        Сохраняются только числа-«отпечатки» лица, сами снимки не сохраняются.</p>
+      <div id="bio-box" class="card card-body d-none mb-2">
+        {% with first_instruction="Смотрите прямо в камеру" %}{% include "_face_camera.html" %}{% endwith %}
+      </div>
+      <button type="button" id="bio-btn" class="btn btn-outline-primary">Пройти биометрию</button>
+      <div id="bio-result" class="mt-2"></div>
+      <button class="btn btn-primary mt-4" id="register-btn">Register</button>
       <p class="mt-2 mb-0">Already registered? <a href="/login">Log in</a></p>
     </form>
   </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+{% include "_face_camera_js.html" %}
+<script>
+// "Пройти биометрию": the server returns a one-time enrollment_token, it goes into the hidden field.
+// The server checks the token again when the form is sent (without it: error, no account).
+const bioButton = document.getElementById("bio-btn");
+const bioResult = document.getElementById("bio-result");
+const tokenField = document.getElementById("enrollment_token");
+const BIOMETRICS_REQUIRED = {{ "true" if enroll_required else "false" }};  // FACE_ENROLL_REQUIRED
+const bioShow = (cls, html) => bioResult.innerHTML = `<div class="alert alert-${cls} mb-0">${html}</div>`;
+
+function biometricsDone() {
+  bioButton.textContent = "Пройти биометрию заново";
+  bioShow("success", "<b>Биометрия пройдена ✔</b> Теперь заполните форму и нажмите Register.");
+}
+if (tokenField.value) biometricsDone();
+
+bioButton.addEventListener("click", async () => {
+  bioButton.disabled = true;
+  document.getElementById("bio-box").classList.remove("d-none");
+  bioResult.innerHTML = "";
+  try {
+    const result = await FaceCam.enroll();
+    if (!result.passed) {
+      return bioShow("warning", `<b>Не получилось ✘</b><br>${esc(result.reason)}<br>Нажмите кнопку и попробуйте ещё раз.`);
+    }
+    tokenField.value = result.enrollment_token;
+    biometricsDone();
+  } catch (e) {
+    FaceCam.say("Ошибка");
+    bioShow("danger", "Ошибка: " + esc(e.message) +
+      "<br>Разрешите доступ к камере и откройте сайт как http://127.0.0.1 или localhost.");
+  } finally {
+    bioButton.disabled = false;
+  }
+});
+
+document.querySelector("form").addEventListener("submit", (event) => {
+  if (BIOMETRICS_REQUIRED && !tokenField.value) {
+    event.preventDefault();
+    bioShow("warning", "Сначала пройдите биометрию (кнопка «Пройти биометрию»).");
+  }
+});
+</script>
 {% endblock %}

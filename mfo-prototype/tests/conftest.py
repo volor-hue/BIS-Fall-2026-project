@@ -20,6 +20,9 @@ os.environ["MFO_RATE_LIMIT_DEFAULT"] = "60/minute"
 # A fixed JWT secret for the tests (a real server sets its own in .env).
 os.environ["MFO_JWT_SECRET"] = "test-secret-only-for-pytest-0123456789abcdef"
 os.environ["MFO_JWT_EXPIRE_MINUTES"] = "60"
+# Registration without a camera in the tests (the real server requires "Пройти биометрию").
+# tests/test_face_enroll.py switches the requirement on and checks it.
+os.environ["FACE_ENROLL_REQUIRED"] = "0"
 
 
 @pytest.fixture
@@ -83,3 +86,20 @@ def as_user(client):
         return test_client
 
     return make
+
+
+@pytest.fixture
+def fake_engine(monkeypatch):
+    # Face tests: replace the neural networks with made-up faces (tests/face_fakes.py)
+    # and record what was analysed.
+    from face_auth import engine
+    from face_fakes import fake_analyze
+
+    calls = []
+
+    def analyze(data, label="live"):
+        calls.append(data)
+        return fake_analyze(data, label)
+
+    monkeypatch.setattr(engine, "analyze", analyze)
+    return calls
