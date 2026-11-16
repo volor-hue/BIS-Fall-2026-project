@@ -54,19 +54,27 @@ def test_register_is_limited(client):
 
 def test_applications_and_documents_have_submit_limit(client):
     for _ in range(allowed(rate_limit.SUBMIT_LIMIT)):
-        # Client 999 does not exist (404), but the request still counts.
-        assert client.post("/api/applications", json=APPLICATION).status_code == 404
+        # No token (401), but the request still counts: spam without logging in is limited too.
+        assert client.post("/api/applications", json=APPLICATION).status_code == 401
     r = client.post("/api/applications", json=APPLICATION)
     assert r.status_code == 429
     assert r.json() == {"detail": main.TOO_MANY_REQUESTS}  # the API answers JSON
 
     upload = {"file": ("p.png", b"img", "image/png")}
     for _ in range(allowed(rate_limit.SUBMIT_LIMIT)):
-        assert client.post("/api/clients/999/documents", files=upload).status_code == 404
+        assert client.post("/api/clients/999/documents", files=upload).status_code == 401
     assert client.post("/api/clients/999/documents", files=upload).status_code == 429
 
 
-def test_other_endpoints_have_default_limit_each(client):
+def test_logged_in_user_is_limited_too(staff):
+    for _ in range(allowed(rate_limit.SUBMIT_LIMIT)):
+        # Client 999 does not exist (404), but the request still counts.
+        assert staff.post("/api/applications", json=APPLICATION).status_code == 404
+    assert staff.post("/api/applications", json=APPLICATION).status_code == 429
+
+
+def test_other_endpoints_have_default_limit_each(staff):
+    client = staff
     for _ in range(allowed(rate_limit.DEFAULT_LIMIT)):
         assert client.get("/api/employees").status_code == 200
     assert client.get("/api/employees").status_code == 429
@@ -74,7 +82,8 @@ def test_other_endpoints_have_default_limit_each(client):
     assert client.get("/api/clients").status_code == 200
 
 
-def test_changing_the_id_in_the_url_does_not_bypass_the_limit(client):
+def test_changing_the_id_in_the_url_does_not_bypass_the_limit(staff):
+    client = staff
     # /api/clients/1, /api/clients/2, ... are ONE endpoint, so they share one counter.
     for client_id in range(1, allowed(rate_limit.DEFAULT_LIMIT) + 1):
         assert client.get(f"/api/clients/{client_id}").status_code == 404

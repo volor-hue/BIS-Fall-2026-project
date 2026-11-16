@@ -6,6 +6,7 @@
 # API docs:      http://127.0.0.1:8000/docs   (Swagger, try every endpoint there)
 # ------------------------------------------------------------
 import hashlib
+import hmac
 import logging
 import os
 import sqlite3
@@ -13,13 +14,15 @@ import time
 from datetime import date, datetime
 from typing import Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
+import auth_jwt
 import database
 import rate_limit
 from approval import INTEREST_RATE, build_schedule, decide_application, run_checks
@@ -80,8 +83,16 @@ class ApplicationIn(BaseModel):
 
 
 class DecisionIn(BaseModel):
-    employee_id: int = Field(examples=[1])
+    # Optional: the employee is taken from the JWT. If it is sent, it must match the token.
+    employee_id: Optional[int] = Field(None, examples=[1])
     decision: str = Field(pattern="^(approve|reject)$", examples=["approve"])
+
+
+class RegisterIn(ClientIn):
+    # Registration through the API: the client and (optionally) their job in one request.
+    employer_name: str = Field("", examples=["Kaspi Bank"])
+    position: str = Field("", examples=["Analyst"])
+    monthly_income: float = Field(0, ge=0, examples=[300000])
 
 
 # ============================================================
@@ -145,20 +156,103 @@ def submit_application(client_id, requested_amount, term_months, purpose):
     return application
 
 
+def request_token(request):
+    # The JWT of this request: "Authorization: Bearer <token>" (API) or the HttpOnly cookie (pages).
+    scheme, _, value = request.headers.get("authorization", "").partition(" ")
+    if scheme.lower() == "bearer" and value.strip():
+        return value.strip()
+    return request.cookies.get(auth_jwt.COOKIE_NAME)
+
+
 def current_client_id(request):
-    # PROTOTYPE LOGIN: we keep the id in a plain cookie. Anyone can edit a cookie,
-    # so a real system must use signed sessions/JWT (Architecture & Security task).
-    value = request.cookies.get("client_id")
-    if value and value.isdigit():
-        return int(value)
-    return None
+    # Who is logged in is taken ONLY from a JWT signed by the server (see auth_jwt.py).
+    # An edited or expired token gives None, so the user is sent back to /login.
+    return auth_jwt.user_from_token(request_token(request), "client")
 
 
 def current_employee_id(request):
-    value = request.cookies.get("employee_id")
-    if value and value.isdigit():
-        return int(value)
+    return auth_jwt.user_from_token(request_token(request), "employee")
+
+
+def check_credentials(login, password):
+    # Returns ("employee", id), ("client", id) or None. Used by the web form and by the API.
+    login = login.strip().lower()
+    password_hash = database.hash_password(password)
+    # First we look for an EMPLOYEE with this login, then for a CLIENT with this email.
+    employee = database.get_employee_login(login)
+    if employee is not None and hmac.compare_digest(employee["password_hash"], password_hash):
+        return "employee", employee["employee_id"]
+    client = database.get_client_login(login)
+    if client is not None and hmac.compare_digest(client["password_hash"], password_hash):
+        return "client", client["client_id"]
     return None
+
+
+def token_response(role, user_id):
+    # The JSON the API returns after login/registration (OAuth2 "password flow" format).
+    return {"access_token": auth_jwt.create_token(role, user_id), "token_type": "bearer",
+            "expires_in": auth_jwt.EXPIRE_SECONDS, "role": role, "user_id": user_id}
+
+
+def set_auth_cookie(response, role, user_id):
+    # HttpOnly: JavaScript cannot read the token. SameSite=Lax: other sites cannot send forms with it.
+    response.set_cookie(auth_jwt.COOKIE_NAME, auth_jwt.create_token(role, user_id),
+                        max_age=auth_jwt.EXPIRE_SECONDS, httponly=True, samesite="lax")
+    # Remove the old plain-id cookies of the previous prototype version.
+    response.delete_cookie("client_id")
+    response.delete_cookie("employee_id")
+    return response
+
+
+# Swagger (/docs) shows the "Authorize" button: enter login + password, it calls /api/auth/login.
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
+
+
+def _unauthorized(detail):
+    return HTTPException(401, detail, headers={"WWW-Authenticate": "Bearer"})
+
+
+def authenticate(request, token):
+    # Check the JWT (Bearer header from the API or the cookie from the web pages) -> its payload.
+    # The account must still exist: a token of a deleted client is refused.
+    try:
+        payload = auth_jwt.decode_token(token or request.cookies.get(auth_jwt.COOKIE_NAME))
+    except auth_jwt.TokenError:
+        raise _unauthorized("Not authenticated or token expired")
+    if payload["role"] == "employee":
+        exists = database.get_employee(payload["uid"]) is not None
+    else:
+        exists = database.get_client(payload["uid"]) is not None
+    if not exists:
+        raise _unauthorized("User no longer exists")
+    return payload
+
+
+def require_user(request: Request, token: Optional[str] = Depends(oauth2_scheme)):
+    # Dependency: any logged-in user (client or employee), otherwise 401.
+    return authenticate(request, token)
+
+
+def require_employee(user: dict = Depends(require_user)):
+    # Dependency: only employees, a client gets 403.
+    if user["role"] != "employee":
+        raise HTTPException(403, "Only employees can do this")
+    return user
+
+
+def ensure_own_client(user, client_id):
+    # An employee may work with any client, a client only with their own data.
+    if user["role"] != "employee" and user["uid"] != client_id:
+        raise HTTPException(403, "Access denied: this is another client's data")
+
+
+def client_filter(user, client_id):
+    # For list endpoints (?client_id=...): a client always sees only their own rows.
+    if user["role"] == "employee":
+        return client_id
+    if client_id is not None and client_id != user["uid"]:
+        raise HTTPException(403, "Access denied: this is another client's data")
+    return user["uid"]
 
 
 def who(request):
@@ -224,13 +318,61 @@ async def log_requests(request: Request, call_next):
 
 
 # ============================================================
-# REST API (JSON). NOTE: the API is open (no login) so it can be tried in /docs.
-# Protecting it with authentication is a planned Security task.
+# REST API (JSON), protected with JWT (see auth_jwt.py):
+#   public:    POST /api/auth/register, POST /api/auth/login, POST /api/clients (registration)
+#   employee:  everything
+#   client:    only their own data (another client's data -> 403)
+#   no token:  401
+# Token: header "Authorization: Bearer <token>" or the access_token cookie of the web pages.
+# In /docs press "Authorize" and enter a login and password.
 # ============================================================
+
+# ---------- auth (JWT) ----------
+@app.post("/api/auth/register", tags=["auth"], status_code=201)
+@limiter.limit(AUTH_LIMIT)
+def api_register(body: RegisterIn, request: Request):
+    # Registration through the API: creates the client (+ job) and returns a JWT right away.
+    try:
+        client_id = database.create_client(body.iin, body.full_name, body.birth_date, body.phone,
+                                           body.address, body.email.strip().lower(), body.password,
+                                           body.marital_status, now_text())
+    except sqlite3.IntegrityError:
+        audit("register_failed", request, logging.WARNING, via="api_jwt", reason="duplicate")
+        raise HTTPException(400, "Client with this IIN or email already exists")
+    if body.employer_name.strip():
+        database.create_employment(client_id, body.employer_name, body.position, body.monthly_income)
+    audit("register_ok", request, via="api_jwt", client_id=client_id)
+    return {**token_response("client", client_id), "client": database.get_client(client_id)}
+
+
+@app.post("/api/auth/login", tags=["auth"])
+@limiter.limit(AUTH_LIMIT)
+def api_login(request: Request, form: OAuth2PasswordRequestForm = Depends()):
+    # OAuth2 password flow: form fields "username" (client e-mail or employee login) and "password".
+    user = check_credentials(form.username, form.password)
+    if user is None:
+        audit("login_failed", request, logging.WARNING, via="api_jwt", login=mask_login(form.username))
+        raise HTTPException(401, "Wrong login or password", headers={"WWW-Authenticate": "Bearer"})
+    role, user_id = user
+    audit("login_ok", request, via="api_jwt", role=role, user_id=user_id)
+    return token_response(role, user_id)
+
+
+@app.get("/api/auth/me", tags=["auth"])
+def api_me(user: dict = Depends(require_user)):
+    # Who owns this token. Requires the header "Authorization: Bearer <token>".
+    # (require_user has already refused tokens of deleted accounts.)
+    if user["role"] == "employee":
+        profile = database.get_employee(user["uid"])
+    else:
+        profile = database.get_client(user["uid"])
+    return {"role": user["role"], "user_id": user["uid"], "expires_at": user["exp"], "profile": profile}
+
 
 # ---------- clients ----------
 @app.post("/api/clients", tags=["clients"], status_code=201)
 def api_create_client(body: ClientIn, request: Request):
+    # PUBLIC: this is registration (like /api/auth/register, but without a token in the answer).
     try:
         client_id = database.create_client(body.iin, body.full_name, body.birth_date, body.phone,
                                            body.address, body.email.strip().lower(), body.password,
@@ -244,12 +386,13 @@ def api_create_client(body: ClientIn, request: Request):
 
 
 @app.get("/api/clients", tags=["clients"])
-def api_list_clients():
+def api_list_clients(user: dict = Depends(require_employee)):
     return database.get_clients()
 
 
 @app.get("/api/clients/{client_id}", tags=["clients"])
-def api_get_client(client_id: int):
+def api_get_client(client_id: int, user: dict = Depends(require_user)):
+    ensure_own_client(user, client_id)
     client = database.get_client(client_id)
     if client is None:
         raise HTTPException(404, "Client not found")
@@ -258,7 +401,7 @@ def api_get_client(client_id: int):
 
 
 @app.delete("/api/clients/{client_id}", tags=["clients"])
-def api_delete_client(client_id: int, request: Request):
+def api_delete_client(client_id: int, request: Request, user: dict = Depends(require_employee)):
     # Demonstrates ON DELETE CASCADE: all related rows disappear too.
     if database.delete_client(client_id) == 0:
         raise HTTPException(404, "Client not found")
@@ -268,7 +411,8 @@ def api_delete_client(client_id: int, request: Request):
 
 # ---------- employment ----------
 @app.post("/api/clients/{client_id}/employment", tags=["employment"], status_code=201)
-def api_add_employment(client_id: int, body: EmploymentIn):
+def api_add_employment(client_id: int, body: EmploymentIn, user: dict = Depends(require_user)):
+    ensure_own_client(user, client_id)
     try:
         employment_id = database.create_employment(client_id, body.employer_name,
                                                    body.position, body.monthly_income)
@@ -279,35 +423,46 @@ def api_add_employment(client_id: int, body: EmploymentIn):
 
 
 @app.get("/api/clients/{client_id}/employment", tags=["employment"])
-def api_list_employment(client_id: int):
+def api_list_employment(client_id: int, user: dict = Depends(require_user)):
+    ensure_own_client(user, client_id)
     return database.get_employment(client_id)
 
 
 # ---------- documents ----------
+# Endpoints with their own rate limit check the token INSIDE the function (authenticate(...)),
+# not with Depends(require_user): this way the limiter counts the request first,
+# so requests without a token are limited too.
 @app.post("/api/clients/{client_id}/documents", tags=["documents"], status_code=201)
 @limiter.limit(SUBMIT_LIMIT)
 def api_upload_document(request: Request, client_id: int, doc_type: str = Form("passport"),
-                        file: UploadFile = File(...)):
+                        file: UploadFile = File(...), token: Optional[str] = Depends(oauth2_scheme)):
+    user = authenticate(request, token)
+    ensure_own_client(user, client_id)
     if database.get_client(client_id) is None:
         raise HTTPException(404, "Client not found")
     return save_document(client_id, doc_type, file)
 
 
 @app.get("/api/clients/{client_id}/documents", tags=["documents"])
-def api_list_documents(client_id: int):
+def api_list_documents(client_id: int, user: dict = Depends(require_user)):
+    ensure_own_client(user, client_id)
     return database.get_documents(client_id)
 
 
 # ---------- employees ----------
 @app.get("/api/employees", tags=["employees"])
-def api_list_employees():
+def api_list_employees(user: dict = Depends(require_employee)):
     return database.get_employees()
 
 
 # ---------- loan applications ----------
 @app.post("/api/applications", tags=["applications"], status_code=201)
 @limiter.limit(SUBMIT_LIMIT)
-def api_create_application(body: ApplicationIn, request: Request):
+def api_create_application(body: ApplicationIn, request: Request,
+                           token: Optional[str] = Depends(oauth2_scheme)):
+    user = authenticate(request, token)
+    # A client can apply only for themselves; an employee can enter an application for any client.
+    ensure_own_client(user, body.client_id)
     application = submit_application(body.client_id, body.requested_amount, body.term_months, body.purpose)
     audit("application_submitted", request, application_id=application["application_id"],
           client_id=body.client_id, amount=body.requested_amount, term_months=body.term_months,
@@ -316,34 +471,40 @@ def api_create_application(body: ApplicationIn, request: Request):
 
 
 @app.get("/api/applications", tags=["applications"])
-def api_list_applications(client_id: Optional[int] = None):
-    # /api/applications            -> all applications
-    # /api/applications?client_id=1 -> only this client's applications
-    return database.get_applications(client_id)
+def api_list_applications(client_id: Optional[int] = None, user: dict = Depends(require_user)):
+    # Employee: /api/applications -> all, ?client_id=1 -> only this client's applications.
+    # Client: always only their own applications.
+    return database.get_applications(client_filter(user, client_id))
 
 
 @app.get("/api/applications/{application_id}", tags=["applications"])
-def api_get_application(application_id: int):
+def api_get_application(application_id: int, user: dict = Depends(require_user)):
     application = database.get_application(application_id)
     if application is None:
         raise HTTPException(404, "Application not found")
+    ensure_own_client(user, application["client_id"])
     return application
 
 
 @app.get("/api/applications/{application_id}/checks", tags=["client_checks"])
-def api_get_checks(application_id: int):
+def api_get_checks(application_id: int, user: dict = Depends(require_employee)):
+    # The internal scoring checks are for employees only.
     if database.get_application(application_id) is None:
         raise HTTPException(404, "Application not found")
     return database.get_checks(application_id)
 
 
 @app.post("/api/applications/{application_id}/decision", tags=["applications"])
-def api_decide(application_id: int, body: DecisionIn, request: Request):
+def api_decide(application_id: int, body: DecisionIn, request: Request,
+               user: dict = Depends(require_employee)):
+    # WHO decides is taken from the token, not from the request body:
+    # an employee cannot make a decision in the name of a colleague.
+    employee_id = user["uid"]
+    if body.employee_id is not None and body.employee_id != employee_id:
+        raise HTTPException(403, "employee_id does not match the logged-in employee")
     application = database.get_application(application_id)
     if application is None:
         raise HTTPException(404, "Application not found")
-    if database.get_employee(body.employee_id) is None:
-        raise HTTPException(404, "Employee not found")
     # Only MANUAL applications that are still waiting can be decided by an employee.
     if application["approval_type"] != "Manual" or application["status"] != "Pending Admin Review":
         raise HTTPException(400, "Only pending manual applications can be decided")
@@ -354,9 +515,9 @@ def api_decide(application_id: int, body: DecisionIn, request: Request):
         new_status = "Rejected"
 
     # Save the decision AND who made it (employee_id).
-    database.set_application_decision(application_id, new_status, body.employee_id)
+    database.set_application_decision(application_id, new_status, employee_id)
     audit("application_decided", request, application_id=application_id,
-          decision=body.decision, employee_id=body.employee_id)
+          decision=body.decision, employee_id=employee_id)
     application = database.get_application(application_id)
     if new_status == "Approved":
         application["loan_id"] = issue_loan(application)
@@ -365,31 +526,35 @@ def api_decide(application_id: int, body: DecisionIn, request: Request):
 
 # ---------- loans ----------
 @app.get("/api/loans", tags=["loans"])
-def api_list_loans(client_id: Optional[int] = None):
-    return database.get_loans(client_id)
+def api_list_loans(client_id: Optional[int] = None, user: dict = Depends(require_user)):
+    return database.get_loans(client_filter(user, client_id))
 
 
 @app.get("/api/loans/{loan_id}", tags=["loans"])
-def api_get_loan(loan_id: int):
+def api_get_loan(loan_id: int, user: dict = Depends(require_user)):
     loan = database.get_loan(loan_id)
     if loan is None:
         raise HTTPException(404, "Loan not found")
+    ensure_own_client(user, loan["client_id"])
     return loan
 
 
 # ---------- repayments ----------
 @app.get("/api/loans/{loan_id}/repayments", tags=["repayments"])
-def api_list_repayments(loan_id: int):
-    if database.get_loan(loan_id) is None:
+def api_list_repayments(loan_id: int, user: dict = Depends(require_user)):
+    loan = database.get_loan(loan_id)
+    if loan is None:
         raise HTTPException(404, "Loan not found")
+    ensure_own_client(user, loan["client_id"])
     return database.get_repayments(loan_id)
 
 
 @app.post("/api/repayments/{payment_id}/pay", tags=["repayments"])
-def api_pay(payment_id: int, request: Request):
+def api_pay(payment_id: int, request: Request, user: dict = Depends(require_user)):
     payment = database.get_repayment(payment_id)
     if payment is None:
         raise HTTPException(404, "Payment not found")
+    ensure_own_client(user, database.get_loan(payment["loan_id"])["client_id"])
     if payment["status"] == "Paid":
         raise HTTPException(400, "This payment is already paid")
     database.mark_repayment_paid(payment_id)
@@ -468,30 +633,17 @@ def login_page(request: Request):
 @app.post("/login", include_in_schema=False)
 @limiter.limit(AUTH_LIMIT)
 def login(request: Request, login: str = Form(...), password: str = Form(...)):
-    login = login.strip().lower()
-    password_hash = database.hash_password(password)
-
-    # First we look for an EMPLOYEE with this login...
-    employee = database.get_employee_login(login)
-    if employee is not None and employee["password_hash"] == password_hash:
-        audit("login_ok", request, role="employee", user_id=employee["employee_id"])
-        response = RedirectResponse("/admin", status_code=303)
-        response.set_cookie("employee_id", str(employee["employee_id"]), httponly=True)
-        response.delete_cookie("client_id")
-        return response
-
-    # ...then for a CLIENT with this email.
-    client = database.get_client_login(login)
-    if client is not None and client["password_hash"] == password_hash:
-        audit("login_ok", request, role="client", user_id=client["client_id"])
-        response = RedirectResponse("/dashboard", status_code=303)
-        response.set_cookie("client_id", str(client["client_id"]), httponly=True)
-        response.delete_cookie("employee_id")
-        return response
+    user = check_credentials(login, password)
+    if user is not None:
+        role, user_id = user
+        audit("login_ok", request, role=role, user_id=user_id)
+        # The browser gets a signed JWT in an HttpOnly cookie (not a plain id anyone could edit).
+        response = RedirectResponse("/admin" if role == "employee" else "/dashboard", status_code=303)
+        return set_auth_cookie(response, role, user_id)
 
     # Failed logins are WARNING: many of them in a row = someone is guessing passwords.
     # The password is NEVER written to the log, the login is masked.
-    audit("login_failed", request, logging.WARNING, login=mask_login(login))
+    audit("login_failed", request, logging.WARNING, login=mask_login(login.strip().lower()))
     return templates.TemplateResponse(request, "login.html",
                                       {"error": "Wrong login or password.", "registered": False},
                                       status_code=401)
@@ -501,6 +653,7 @@ def login(request: Request, login: str = Form(...), password: str = Form(...)):
 def logout(request: Request):
     audit("logout", request)
     response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(auth_jwt.COOKIE_NAME)
     response.delete_cookie("client_id")
     response.delete_cookie("employee_id")
     return response

@@ -661,7 +661,8 @@ def test_bot_ignores_start_payload_group_and_callback_tamper(tmp_path, monkeypat
     assert telegram_text.NOT_LINKED_TEXT in outgoing_text(run_feed("/loan " + str(own["loan_id"]), user_id=999))
 
 
-def test_link_flow_and_payment_status_from_api(client):
+def test_link_flow_and_payment_status_from_api(staff):
+    client = staff  # an employee enters the data through the protected API
     created = client.post("/api/clients", json={
         "iin": "850101300999", "full_name": "<Иван> Тестов", "birth_date": "2005-01-01",
         "phone": "+77009998877", "address": "SECRET ADDRESS 9", "email": "secret-mail@test.kz",
@@ -701,7 +702,7 @@ def test_link_flow_and_payment_status_from_api(client):
     assert second["status"] == "Pending"
 
 
-def test_openapi_stays_18_operations_without_telegram(client):
+def test_openapi_stays_21_operations_without_telegram(client):
     spec = client.get("/openapi.json").json()
     operations = {
         (method, path)
@@ -728,8 +729,11 @@ def test_openapi_stays_18_operations_without_telegram(client):
         ("get", "/api/loans/{loan_id}"),
         ("get", "/api/loans/{loan_id}/repayments"),
         ("post", "/api/repayments/{payment_id}/pay"),
+        ("post", "/api/auth/register"),
+        ("post", "/api/auth/login"),
+        ("get", "/api/auth/me"),
     }
-    assert len(operations) == 18
+    assert len(operations) == 21
     blob = str(spec).lower()
     assert "telegram" not in blob and "pairing" not in blob
     assert client.get("/docs").status_code == 200

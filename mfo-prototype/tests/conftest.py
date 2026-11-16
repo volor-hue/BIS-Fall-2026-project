@@ -17,6 +17,9 @@ os.environ["MFO_LOG_DIR"] = os.path.join(tempfile.mkdtemp(), "logs")
 os.environ["MFO_RATE_LIMIT_AUTH"] = "5/minute"
 os.environ["MFO_RATE_LIMIT_SUBMIT"] = "10/minute"
 os.environ["MFO_RATE_LIMIT_DEFAULT"] = "60/minute"
+# A fixed JWT secret for the tests (a real server sets its own in .env).
+os.environ["MFO_JWT_SECRET"] = "test-secret-only-for-pytest-0123456789abcdef"
+os.environ["MFO_JWT_EXPIRE_MINUTES"] = "60"
 
 
 @pytest.fixture
@@ -32,4 +35,41 @@ def client(tmp_path, monkeypatch):
     database.init_db()
     # Rate limit counters live in memory: start every test from zero.
     rate_limit.reset()
+    # An ANONYMOUS client (no token). Protected /api/* endpoints answer it with 401.
     return TestClient(main.app)
+
+
+def bearer(login, password):
+    # Check the password like /api/auth/login does and return {"Authorization": "Bearer <token>"}.
+    # (Not through HTTP, so the fixtures do not use up the login rate limit of the tests.)
+    import auth_jwt
+    import main
+
+    user = main.check_credentials(login, password)
+    assert user is not None, "wrong test login or password"
+    return {"Authorization": "Bearer " + auth_jwt.create_token(*user)}
+
+
+@pytest.fixture
+def staff(client):
+    # A separate TestClient logged in as the seeded employee "admin" (Bearer token in every request).
+    import main
+    from fastapi.testclient import TestClient
+
+    test_client = TestClient(main.app)
+    test_client.headers.update(bearer("admin", "admin123"))
+    return test_client
+
+
+@pytest.fixture
+def as_user(client):
+    # as_user("mail@test.kz", "pass123") -> a new TestClient logged in as this user.
+    import main
+    from fastapi.testclient import TestClient
+
+    def make(login, password):
+        test_client = TestClient(main.app)
+        test_client.headers.update(bearer(login, password))
+        return test_client
+
+    return make

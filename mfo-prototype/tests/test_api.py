@@ -12,50 +12,50 @@ CLIENT = {
 }
 
 
-def make_client_with_income(client, income=300000):
-    r = client.post("/api/clients", json=CLIENT)
+def make_client_with_income(api, income=300000):
+    r = api.post("/api/clients", json=CLIENT)
     assert r.status_code == 201
     client_id = r.json()["client_id"]
-    r = client.post(f"/api/clients/{client_id}/employment",
+    r = api.post(f"/api/clients/{client_id}/employment",
                     json={"employer_name": "Kaspi", "position": "Analyst", "monthly_income": income})
     assert r.status_code == 201
     return client_id
 
 
-def test_create_and_get_client_hides_password(client):
-    client_id = make_client_with_income(client)
-    data = client.get(f"/api/clients/{client_id}").json()
+def test_create_and_get_client_hides_password(staff):
+    client_id = make_client_with_income(staff)
+    data = staff.get(f"/api/clients/{client_id}").json()
     assert data["iin"] == CLIENT["iin"]
     assert data["total_monthly_income"] == 300000
     assert "password_hash" not in data
 
 
-def test_iin_must_be_12_digits(client):
-    r = client.post("/api/clients", json={**CLIENT, "iin": "123"})
+def test_iin_must_be_12_digits(staff):
+    r = staff.post("/api/clients", json={**CLIENT, "iin": "123"})
     assert r.status_code == 422  # Pydantic validation error
 
 
-def test_iin_is_unique(client):
-    make_client_with_income(client)
-    r = client.post("/api/clients", json={**CLIENT, "email": "other@test.kz"})
+def test_iin_is_unique(staff):
+    make_client_with_income(staff)
+    r = staff.post("/api/clients", json={**CLIENT, "email": "other@test.kz"})
     assert r.status_code == 400
 
 
-def test_income_is_sum_of_all_jobs(client):
-    client_id = make_client_with_income(client, 100000)
-    client.post(f"/api/clients/{client_id}/employment",
+def test_income_is_sum_of_all_jobs(staff):
+    client_id = make_client_with_income(staff, 100000)
+    staff.post(f"/api/clients/{client_id}/employment",
                 json={"employer_name": "Freelance", "monthly_income": 50000})
-    assert len(client.get(f"/api/clients/{client_id}/employment").json()) == 2
-    assert client.get(f"/api/clients/{client_id}").json()["total_monthly_income"] == 150000
+    assert len(staff.get(f"/api/clients/{client_id}/employment").json()) == 2
+    assert staff.get(f"/api/clients/{client_id}").json()["total_monthly_income"] == 150000
 
 
-def test_foreign_key_blocks_employment_for_missing_client(client):
-    r = client.post("/api/clients/999/employment", json={"employer_name": "X", "monthly_income": 1})
+def test_foreign_key_blocks_employment_for_missing_client(staff):
+    r = staff.post("/api/clients/999/employment", json={"employer_name": "X", "monthly_income": 1})
     assert r.status_code == 400
     assert "FOREIGN KEY" in r.json()["detail"]
 
 
-def test_foreign_key_enforced_in_sqlite_directly(client):
+def test_foreign_key_enforced_in_sqlite_directly(staff):
     # Even without our API, the database itself refuses a bad client_id.
     conn = database.get_connection()
     try:
@@ -68,9 +68,9 @@ def test_foreign_key_enforced_in_sqlite_directly(client):
         conn.close()
 
 
-def test_document_upload_saves_file_and_hash(client):
-    client_id = make_client_with_income(client)
-    r = client.post(f"/api/clients/{client_id}/documents", data={"doc_type": "passport"},
+def test_document_upload_saves_file_and_hash(staff):
+    client_id = make_client_with_income(staff)
+    r = staff.post(f"/api/clients/{client_id}/documents", data={"doc_type": "passport"},
                     files={"file": ("passport.jpg", b"fake image", "image/jpeg")})
     assert r.status_code == 201
     doc = r.json()
@@ -79,14 +79,14 @@ def test_document_upload_saves_file_and_hash(client):
     assert doc["file_hash"] == hashlib.sha256(b"fake image").hexdigest()
     with open(doc["file_path"], "rb") as f:
         assert f.read() == b"fake image"
-    assert len(client.get(f"/api/clients/{client_id}/documents").json()) == 1
+    assert len(staff.get(f"/api/clients/{client_id}/documents").json()) == 1
 
 
-def test_full_process_three_cases_and_employee_decision(client):
-    client_id = make_client_with_income(client, 300000)
+def test_full_process_three_cases_and_employee_decision(staff):
+    client_id = make_client_with_income(staff, 300000)
 
     def apply(amount, term):
-        r = client.post("/api/applications", json={"client_id": client_id, "requested_amount": amount,
+        r = staff.post("/api/applications", json={"client_id": client_id, "requested_amount": amount,
                                                    "term_months": term, "purpose": "test"})
         assert r.status_code == 201
         return r.json()
@@ -101,43 +101,43 @@ def test_full_process_three_cases_and_employee_decision(client):
     assert a3["employee_id"] is None
 
     # Each application has 4 automatic checks.
-    checks = client.get(f"/api/applications/{a3['application_id']}/checks").json()
+    checks = staff.get(f"/api/applications/{a3['application_id']}/checks").json()
     assert {c["check_type"]: c["result_status"] for c in checks}["AMOUNT_LIMIT"] == "MANUAL_REVIEW"
 
     # Auto applications cannot be decided by an employee.
-    r = client.post(f"/api/applications/{a1['application_id']}/decision",
+    r = staff.post(f"/api/applications/{a1['application_id']}/decision",
                     json={"employee_id": 1, "decision": "approve"})
     assert r.status_code == 400
 
-    # Unknown employee -> 404.
-    r = client.post(f"/api/applications/{a3['application_id']}/decision",
+    # employee_id that is not the logged-in employee -> 403 (no deciding in a colleague's name).
+    r = staff.post(f"/api/applications/{a3['application_id']}/decision",
                     json={"employee_id": 999, "decision": "approve"})
-    assert r.status_code == 404
+    assert r.status_code == 403
 
     # The seeded employee approves the big one.
-    r = client.post(f"/api/applications/{a3['application_id']}/decision",
+    r = staff.post(f"/api/applications/{a3['application_id']}/decision",
                     json={"employee_id": 1, "decision": "approve"})
     assert r.status_code == 200
     assert r.json()["status"] == "Approved"
     assert r.json()["employee_id"] == 1
 
     # Two loans now: auto (400k) and manual (1M). Rejected one has no loan.
-    loans = client.get(f"/api/loans?client_id={client_id}").json()
+    loans = staff.get(f"/api/loans?client_id={client_id}").json()
     assert sorted(l["approved_amount"] for l in loans) == [400000, 1000000]
 
     # Schedule: 12 payments, pay the first one.
     loan_id = a1["loan_id"]
-    payments = client.get(f"/api/loans/{loan_id}/repayments").json()
+    payments = staff.get(f"/api/loans/{loan_id}/repayments").json()
     assert len(payments) == 12
     first = payments[0]["payment_id"]
-    assert client.post(f"/api/repayments/{first}/pay").json()["status"] == "Paid"
-    assert client.post(f"/api/repayments/{first}/pay").status_code == 400  # already paid
-    assert client.get(f"/api/loans/{loan_id}").json()["paid_count"] == 1
+    assert staff.post(f"/api/repayments/{first}/pay").json()["status"] == "Paid"
+    assert staff.post(f"/api/repayments/{first}/pay").status_code == 400  # already paid
+    assert staff.get(f"/api/loans/{loan_id}").json()["paid_count"] == 1
 
 
-def test_loan_is_one_to_one_with_application(client):
-    client_id = make_client_with_income(client)
-    app = client.post("/api/applications", json={"client_id": client_id, "requested_amount": 100000,
+def test_loan_is_one_to_one_with_application(staff):
+    client_id = make_client_with_income(staff)
+    app = staff.post("/api/applications", json={"client_id": client_id, "requested_amount": 100000,
                                                  "term_months": 12}).json()
     conn = database.get_connection()
     try:
@@ -151,37 +151,37 @@ def test_loan_is_one_to_one_with_application(client):
         conn.close()
 
 
-def test_delete_client_cascades(client):
-    client_id = make_client_with_income(client)
-    app = client.post("/api/applications", json={"client_id": client_id, "requested_amount": 100000,
+def test_delete_client_cascades(staff):
+    client_id = make_client_with_income(staff)
+    app = staff.post("/api/applications", json={"client_id": client_id, "requested_amount": 100000,
                                                  "term_months": 12}).json()
-    assert client.delete(f"/api/clients/{client_id}").status_code == 200
+    assert staff.delete(f"/api/clients/{client_id}").status_code == 200
     # Everything that belonged to the client is gone (ON DELETE CASCADE).
-    assert client.get(f"/api/clients/{client_id}/employment").json() == []
-    assert client.get(f"/api/applications/{app['application_id']}").status_code == 404
-    assert client.get(f"/api/loans/{app['loan_id']}").status_code == 404
+    assert staff.get(f"/api/clients/{client_id}/employment").json() == []
+    assert staff.get(f"/api/applications/{app['application_id']}").status_code == 404
+    assert staff.get(f"/api/loans/{app['loan_id']}").status_code == 404
     conn = database.get_connection()
     assert conn.execute("SELECT COUNT(*) FROM repayments").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM client_checks").fetchone()[0] == 0
     conn.close()
 
 
-def test_employees_seeded_without_password(client):
-    employees = client.get("/api/employees").json()
+def test_employees_seeded_without_password(staff):
+    employees = staff.get("/api/employees").json()
     assert employees[0]["login"] == "admin"
     assert "password_hash" not in employees[0]
 
 
-def test_html_register_login_and_pages(client):
+def test_html_register_login_and_pages(client, staff):
     r = client.post("/register", data={
         "full_name": "Web Client", "iin": "990101300456", "phone": "1", "email": "web@test.kz",
         "password": "pass123", "birth_date": "1999-01-01", "employer_name": "Halyk",
         "monthly_income": "300000"}, files={"passport_photo": ("p.png", b"img", "image/png")},
         follow_redirects=False)
     assert r.status_code == 303
-    clients = client.get("/api/clients").json()
+    clients = staff.get("/api/clients").json()
     cid = clients[0]["client_id"]
-    assert len(client.get(f"/api/clients/{cid}/documents").json()) == 1
+    assert len(staff.get(f"/api/clients/{cid}/documents").json()) == 1
 
     # Bad IIN in the form shows an error.
     r = client.post("/register", data={"full_name": "x", "iin": "12", "phone": "1", "email": "x@x.kz",

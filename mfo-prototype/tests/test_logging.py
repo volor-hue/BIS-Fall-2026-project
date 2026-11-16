@@ -52,7 +52,8 @@ def test_failed_login_is_warning_with_masked_login(client, caplog):
                and rec.levelno == logging.WARNING for rec in caplog.records)
 
 
-def test_business_events_are_audited(client, caplog):
+def test_business_events_are_audited(staff, caplog):
+    client = staff  # these API calls need an employee token
     r = client.post("/api/clients", json={
         "iin": "050101500123", "full_name": "Api Client", "birth_date": "2005-01-01",
         "phone": "+77011234567", "email": "api@test.kz", "password": "pass123"})
@@ -86,7 +87,8 @@ def test_user_input_cannot_forge_log_lines(client, caplog):
     assert mask_login("admin") == "ad***"
 
 
-def test_crash_is_logged_with_traceback(client, caplog, monkeypatch):
+def test_crash_is_logged_with_traceback(staff, caplog, monkeypatch):
+    client = staff
     def broken():
         raise RuntimeError("database is down")
 
