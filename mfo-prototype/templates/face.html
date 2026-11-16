@@ -1,17 +1,26 @@
 {% extends "base.html" %}
 {% block content %}
+<style>
+  /* The PREVIEW is mirrored (like a mirror, easier to follow "turn right").
+     The frames sent to the server are taken from the raw camera picture, NOT mirrored. */
+  #video { transform: scaleX(-1); }
+  #instruction { font-size: 1.6rem; min-height: 2.4rem; }
+</style>
 <div class="row justify-content-center">
   <div class="col-md-8">
-    <h2>Face verification</h2>
-    <p class="text-muted" id="hint">The webcam snapshot is compared with the 3x4 photo you uploaded at registration.
-      The snapshot is NOT saved on the server. A successful check unlocks one loan application for a few minutes.</p>
+    <h2>Проверка лица</h2>
+    <p class="text-muted" id="hint">Снимок с камеры сравнивается с фото, которые вы загрузили при регистрации
+      (фото 3x4 и, если есть, фото сбоку). Потом нужно повернуть голову вправо и влево: так сервер понимает,
+      что перед камерой живой человек, а не фото на телефоне. Снимки на сервере НЕ сохраняются.</p>
     <div class="card card-body">
-      <!-- getUserMedia -> <video> -> one frame on <canvas> -> JPEG -> POST /api/face/verify -->
+      <!-- getUserMedia -> <video> -> frames on <canvas> -> JPEG -> POST /api/face/verify, then /api/face/liveness -->
+      <div id="instruction" class="text-center fw-bold mb-2">Нажмите «Начать проверку»</div>
       <video id="video" autoplay playsinline muted class="w-100 bg-dark rounded"></video>
       <canvas id="canvas" class="d-none"></canvas>
-      <button id="check-btn" class="btn btn-primary mt-3" disabled>Take snapshot and verify</button>
+      <div class="progress mt-3" style="height: 8px;"><div id="progress" class="progress-bar" style="width: 0%"></div></div>
+      <button id="check-btn" class="btn btn-primary mt-3" disabled>Начать проверку</button>
       <div id="result" class="mt-3"></div>
-      <a href="/dashboard" class="mt-2">Back to dashboard</a>
+      <a href="/dashboard" class="mt-2">Назад в кабинет</a>
     </div>
   </div>
 </div>
@@ -20,17 +29,29 @@
 {% block scripts %}
 <script>
 // The login cookie (HttpOnly JWT) is sent by the browser automatically with every fetch.
+// The SERVER decides everything (match, order of turns, pass/fail). This page only shows
+// instructions and sends pictures.
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
 const button = document.getElementById("check-btn");
 const result = document.getElementById("result");
+const instruction = document.getElementById("instruction");
+const progress = document.getElementById("progress");
 const nextApply = new URLSearchParams(location.search).get("next") === "apply";
+const FRAMES_PER_TURN = 8;     // frames recorded during one head turn
+const FRAME_GAP_MS = 250;      // 8 x 250 ms = 2 seconds per turn
+const TURN_TEXT = { right: "Поверните голову вправо →", left: "← Поверните голову влево" };
+
 const show = (cls, html) => result.innerHTML = `<div class="alert alert-${cls}">${html}</div>`;
 const detail = (data) => typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
+const sleep = (ms) => new Promise(ok => setTimeout(ok, ms));
+const say = (text) => instruction.textContent = text;
+const setProgress = (part) => progress.style.width = Math.round(part * 100) + "%";
+const fmt = (x) => x === null || x === undefined ? "-" : Number(x).toFixed(3);
 
 if (nextApply) {
   document.getElementById("hint").textContent =
-    "Confirm your identity before the loan application is submitted. After a match the application is sent automatically.";
+    "Подтвердите личность перед отправкой заявки на кредит. После успешной проверки заявка отправится сама.";
 }
 
 // 1) Turn on the webcam.
@@ -39,16 +60,31 @@ if (nextApply) {
     video.srcObject = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
     button.disabled = false;
   } catch (e) {
-    show("danger", "Cannot open the camera: " + esc(e.message) +
-      "<br>Allow camera access in the browser and open the site as http://127.0.0.1 or localhost.");
+    show("danger", "Не удалось включить камеру: " + esc(e.message) +
+      "<br>Разрешите доступ к камере и откройте сайт как http://127.0.0.1 или localhost.");
   }
 })();
 
-// 3) After a match: send the saved application together with the one-time face_token.
+// One frame from the RAW camera picture (drawImage does not apply the CSS mirror) -> JPEG blob.
+async function grab() {
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext("2d").drawImage(video, 0, 0);
+  return await new Promise(ok => canvas.toBlob(ok, "image/jpeg", 0.85));
+}
+
+async function postForm(url, form) {
+  const response = await fetch(url, { method: "POST", body: form });
+  const data = await response.json();
+  if (!response.ok) throw new Error(detail(data));
+  return data;
+}
+
+// After the check: send the saved application together with the one-time face_token.
 async function submitPendingApplication(faceToken) {
   const raw = sessionStorage.getItem("pending_application");
   if (!raw) {
-    show("warning", "No saved application. Go back to the dashboard and press Submit again.");
+    show("warning", "Нет сохранённой заявки. Вернитесь в кабинет и нажмите Submit ещё раз.");
     return;
   }
   const body = JSON.parse(raw);
@@ -61,33 +97,63 @@ async function submitPendingApplication(faceToken) {
   const data = await response.json();
   if (!response.ok) return show("danger", esc(detail(data)));
   sessionStorage.removeItem("pending_application");
-  show("success", `<b>Application submitted.</b> Result: ${esc(data.status)} (${esc(data.approval_type)})`);
+  show("success", `<b>Заявка отправлена.</b> Результат: ${esc(data.status)} (${esc(data.approval_type)})`);
   setTimeout(() => { location.href = "/dashboard"; }, 1500);
 }
 
-// 2) Take one frame, send it to the server, show the result.
+function verified(faceToken) {
+  say("Проверка пройдена ✔");
+  setProgress(1);
+  show("success", "<b>Личность подтверждена ✔</b>");
+  if (nextApply) return submitPendingApplication(faceToken);
+}
+
 button.addEventListener("click", async () => {
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-  canvas.getContext("2d").drawImage(video, 0, 0);
-  const blob = await new Promise(ok => canvas.toBlob(ok, "image/jpeg", 0.9));
-  const form = new FormData();
-  form.append("file", blob, "snapshot.jpg");
   button.disabled = true;
-  show("secondary", "Checking... (the very first check can take longer: the models are loading)");
+  result.innerHTML = "";
+  setProgress(0);
   try {
-    const response = await fetch("/api/face/verify", { method: "POST", body: form });
-    const data = await response.json();
-    if (!response.ok) return show("danger", esc(detail(data)));
-    const score = data.score === null ? "-" : data.score.toFixed(3);
-    if (!data.match) {
-      return show("warning", `<b>Not verified ✘</b><br>${esc(data.reason)}<br>score: ${score} (threshold ${data.threshold})
-        <br>Fix the light, look at the camera and try again. The application was <b>not</b> submitted.`);
+    // STEP 1: look straight -> compare with the registration photos.
+    say("Смотрите прямо в камеру");
+    await sleep(1200);
+    const first = new FormData();
+    first.append("file", await grab(), "snapshot.jpg");
+    show("secondary", "Сравниваю с фото из регистрации... (первый раз дольше: загружаются модели)");
+    const match = await postForm("/api/face/verify", first);
+    if (!match.match) {
+      say("Не получилось");
+      return show("warning", `<b>Не подтверждено ✘</b><br>${esc(match.reason)}<br>сходство: ${fmt(match.score)}
+        (порог ${match.threshold})<br>Поправьте свет, смотрите в камеру и попробуйте ещё раз. Заявка <b>не</b> отправлена.`);
     }
-    show("success", `<b>Face verified ✔</b><br>${esc(data.reason)}<br>score: ${score} (threshold ${data.threshold})`);
-    if (nextApply) await submitPendingApplication(data.face_token);
+    setProgress(0.2);
+    if (!match.liveness_required) return verified(match.face_token);
+
+    // STEP 2: head turns in the order the SERVER chose (random).
+    show("info", `Лицо совпало (сходство ${fmt(match.score)}). Теперь поворачивайте голову по подсказке.`);
+    const form = new FormData();
+    form.append("challenge_id", match.challenge_id);
+    for (let s = 0; s < match.steps.length; s++) {
+      const direction = match.steps[s];
+      say(TURN_TEXT[direction]);
+      for (let i = 0; i < FRAMES_PER_TURN; i++) {
+        await sleep(FRAME_GAP_MS);
+        form.append("frames_" + direction, await grab(), `${direction}${i}.jpg`);
+        setProgress(0.2 + 0.7 * (s * FRAMES_PER_TURN + i + 1) / (match.steps.length * FRAMES_PER_TURN));
+      }
+      say("Смотрите прямо");
+      await sleep(900);
+    }
+    say("Проверяю повороты...");
+    const live = await postForm("/api/face/liveness", form);
+    if (!live.passed) {
+      say("Не получилось");
+      return show("warning", `<b>Проверка живого человека не пройдена ✘</b><br>${esc(live.reason)}
+        <br>Нажмите «Начать проверку» и повторите. Заявка <b>не</b> отправлена.`);
+    }
+    await verified(live.face_token);
   } catch (e) {
-    show("danger", "Network error: " + esc(e.message));
+    say("Ошибка");
+    show("danger", esc(e.message));
   } finally {
     button.disabled = false;
   }

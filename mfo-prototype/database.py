@@ -17,13 +17,12 @@
 #   clients 1--1 telegram_links
 #   clients 1--* telegram_pairing_codes
 #   telegram_link_attempts (keyed by Telegram user id, no client foreign key)
-# Additive face-check table: clients 1--* face_tokens (one-time tokens, see main.py).
+# Face-check tables (face_tokens, face_challenges) are created by face_auth/storage.py.
 # init_db() is idempotent: CREATE TABLE IF NOT EXISTS upgrades an existing file.
 # ------------------------------------------------------------
 import hashlib
 import os
 import sqlite3
-from datetime import datetime, timedelta, timezone
 
 # The file name can be changed with an environment variable (tests use a temp file).
 DB_FILE = os.environ.get("MFO_DB", "mfo.db")
@@ -149,18 +148,6 @@ def init_db():
             amount_due REAL NOT NULL,
             status     TEXT NOT NULL DEFAULT 'Pending',  -- 'Pending' / 'Paid'
             FOREIGN KEY (loan_id) REFERENCES loans (loan_id) ON DELETE CASCADE
-        );
-
-        -- FACE_TOKENS: one-time proof that a client just passed the webcam face check.
-        -- Only the SHA-256 hash of the token is stored. used_at NULL = not used yet.
-        CREATE TABLE IF NOT EXISTS face_tokens (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            client_id  INTEGER NOT NULL,
-            token_hash TEXT NOT NULL UNIQUE,
-            expires_at TEXT NOT NULL,                 -- UTC 'YYYY-MM-DDTHH:MM:SS'
-            used_at    TEXT,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY (client_id) REFERENCES clients (client_id) ON DELETE CASCADE
         );
 
         -- TELEGRAM (additive). Pairing codes are stored only as SHA-256 hashes.
@@ -515,39 +502,3 @@ def mark_repayment_paid(payment_id):
     conn.execute("UPDATE repayments SET status = 'Paid' WHERE payment_id = ?", (payment_id,))
     conn.commit()
     conn.close()
-
-
-# =============== FACE TOKENS (one-time proof of a face check) ===============
-
-def utc_text(moment):
-    return moment.strftime("%Y-%m-%dT%H:%M:%S")
-
-
-def save_face_token(client_id, token_hash, minutes):
-    # Called after a successful face check. Returns the expiry time (UTC text).
-    now = datetime.now(timezone.utc)
-    expires_at = utc_text(now + timedelta(minutes=minutes))
-    conn = get_connection()
-    conn.execute(
-        "INSERT INTO face_tokens (client_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?)",
-        (client_id, token_hash, expires_at, utc_text(now)),
-    )
-    conn.commit()
-    conn.close()
-    return expires_at
-
-
-def consume_face_token(token_hash, client_id):
-    # True only if the token belongs to this client, was not used yet and has not expired.
-    # "AND used_at IS NULL" in the UPDATE makes it single-use even for two requests at once.
-    now = utc_text(datetime.now(timezone.utc))
-    conn = get_connection()
-    cursor = conn.execute(
-        """UPDATE face_tokens SET used_at = ?
-           WHERE token_hash = ? AND client_id = ? AND used_at IS NULL AND expires_at > ?""",
-        (now, token_hash, client_id, now),
-    )
-    conn.commit()
-    ok = cursor.rowcount == 1
-    conn.close()
-    return ok

@@ -302,8 +302,8 @@ def prefetch_face_models():
     so the first webcam check does not wait for the download. Errors only print a hint."""
     def work():
         try:
-            import face_verify
-            face_verify.ensure_models()
+            from face_auth import engine
+            engine.ensure_models()
         except Exception as error:  # no internet / no OpenCV: the site still works
             print(f"Модели для проверки лица не скачаны ({type(error).__name__}). "
                   "Они скачаются при первой проверке лица.", file=sys.stderr)

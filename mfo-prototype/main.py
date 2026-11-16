@@ -5,12 +5,10 @@
 # Pages:         http://127.0.0.1:8001
 # API docs:      http://127.0.0.1:8001/docs   (Swagger, try every endpoint there)
 # ------------------------------------------------------------
-import base64
 import hashlib
 import hmac
 import logging
 import os
-import secrets
 import sqlite3
 import time
 from datetime import date, datetime
@@ -26,7 +24,7 @@ from slowapi.middleware import SlowAPIMiddleware
 
 import auth_jwt
 import database
-import face_verify
+import face_auth
 import rate_limit
 from approval import INTEREST_RATE, build_schedule, decide_application, run_checks
 from log_config import audit, clean, log, mask_login, setup_logging
@@ -46,13 +44,10 @@ app.add_middleware(SlowAPIMiddleware)
 # Uploaded documents are saved into this folder.
 UPLOAD_DIR = "uploads"
 
-# Face check (see face_verify.py and docs/FACE_AUTH_RU.md).
-# After a successful webcam check the client gets a ONE-TIME face_token that is valid for
-# FACE_TOKEN_MINUTES (env or .env, default 5). POST /api/applications from a client needs it.
-FACE_TOKEN_MINUTES = face_verify.TOKEN_MINUTES
-MAX_SNAPSHOT_BYTES = 5 * 1024 * 1024
-JPEG_MAGIC = b"\xff\xd8\xff"
-PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+# Face check: all the code is in the face_auth/ package (see docs/FACE_AUTH_RU.md).
+# After the webcam check (face match + head turns) the client gets a ONE-TIME face_token.
+# POST /api/applications from a client needs it (face_auth.require_fresh_face_token below).
+FACE_PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".png")
 
 # Create the tables and the default employee when the app starts.
 database.init_db()
@@ -480,7 +475,7 @@ def api_create_application(body: ApplicationIn, request: Request,
     if user["role"] == "client":
         # Server-side face gate: without a fresh one-time face_token the application is refused (403).
         # An employee entering an application for a client in the office does not need it.
-        require_fresh_face_token(request, body.face_token, body.client_id)
+        face_auth.require_fresh_face_token(request, body.face_token, body.client_id)
     application = submit_application(body.client_id, body.requested_amount, body.term_months, body.purpose)
     audit("application_submitted", request, application_id=application["application_id"],
           client_id=body.client_id, amount=body.requested_amount, term_months=body.term_months,
@@ -581,80 +576,11 @@ def api_pay(payment_id: int, request: Request, user: dict = Depends(require_user
     return database.get_repayment(payment_id)
 
 
-# ---------- face verification (computer vision, see face_verify.py) ----------
-def face_token_hash(face_token):
-    # Only the SHA-256 of the token is stored in the face_tokens table.
-    return hashlib.sha256(face_token.encode("utf-8")).hexdigest()
-
-
-def require_fresh_face_token(request, face_token, client_id):
-    # Use up a one-time face_token. 403 if it is missing, someone else's, expired or already used.
-    if not face_token:
-        audit("face_gate_denied", request, logging.WARNING, client_id=client_id, reason="no_token")
-        raise HTTPException(403, "Face verification required. Open /face, take a snapshot, then submit again.")
-    if not database.consume_face_token(face_token_hash(face_token), client_id):
-        audit("face_gate_denied", request, logging.WARNING, client_id=client_id, reason="bad_token")
-        raise HTTPException(403, "Face verification token is invalid, expired or already used. Please verify again.")
-
-
-FACE_DOC_TYPES = ("face", "passport")  # the 3x4 photo first, a passport photo as a fallback
-
-
-def reference_photo(client_id):
-    # The newest JPG/PNG the client uploaded at registration.
-    documents = database.get_documents(client_id)
-    for doc_type in FACE_DOC_TYPES:
-        for document in reversed(documents):
-            path = document["file_path"]
-            if document["doc_type"] == doc_type and path.lower().endswith((".jpg", ".jpeg", ".png")) \
-                    and os.path.exists(path):
-                return path
-    return None
-
-
-@app.post("/api/face/verify", tags=["face"])
-@limiter.limit(SUBMIT_LIMIT)
-def api_face_verify(request: Request, file: Optional[UploadFile] = File(None),
-                    image_base64: Optional[str] = Form(None), token: Optional[str] = Depends(oauth2_scheme)):
-    # Compare a webcam snapshot (multipart "file" or form field "image_base64")
-    # with the 3x4 photo the client uploaded at registration. Clients only.
-    user = authenticate(request, token)
-    if user["role"] != "client":
-        raise HTTPException(403, "Only clients verify their face")
-    client_id = user["uid"]
-    if file is not None:
-        live = file.file.read(MAX_SNAPSHOT_BYTES + 1)
-    elif image_base64:
-        try:  # also accepts "data:image/jpeg;base64,...."
-            live = base64.b64decode(image_base64.split(",")[-1], validate=True)
-        except ValueError:
-            raise HTTPException(400, "image_base64 is not valid base64")
-    else:
-        raise HTTPException(400, "Send a webcam snapshot as 'file' or 'image_base64'")
-    if len(live) > MAX_SNAPSHOT_BYTES:
-        raise HTTPException(413, "Snapshot is larger than 5 MB")
-    if not (live.startswith(JPEG_MAGIC) or live.startswith(PNG_MAGIC)):
-        raise HTTPException(400, "Snapshot must be JPG or PNG")
-    reference = reference_photo(client_id)
-    if reference is None:
-        raise HTTPException(404, "No 3x4 photo found. Upload a JPG/PNG photo (doc_type 'face') first.")
-
-    try:
-        result = face_verify.verify(reference, live)
-    except (ImportError, OSError):
-        # OpenCV is not installed, or the models could not be downloaded (no internet).
-        log.exception("face check unavailable")
-        raise HTTPException(503, "Face check is not available on the server right now. Try again later.")
-    # The log gets only the result, never the image (biometric data).
-    audit("face_verify", request, logging.INFO if result["match"] else logging.WARNING,
-          client_id=client_id, match=result["match"], score=result["score"])
-    if result["match"]:
-        # A random one-time token: the client sends it with the loan application.
-        face_token = secrets.token_urlsafe(32)
-        database.save_face_token(client_id, face_token_hash(face_token), FACE_TOKEN_MINUTES)
-        result["face_token"] = face_token
-        result["face_token_expires_in"] = FACE_TOKEN_MINUTES * 60
-    return result
+# ---------- face verification (computer vision) ----------
+# /api/face/verify, /api/face/liveness and the /face page live in face_auth/router.py.
+# They use the same JWT login helpers as the rest of the API.
+app.include_router(face_auth.create_router(authenticate=authenticate, current_client_id=current_client_id,
+                                           oauth2_scheme=oauth2_scheme, templates=templates))
 
 
 # ============================================================
@@ -684,11 +610,14 @@ def register(
     birth_date: str = Form(""), marital_status: str = Form("Single"),
     employer_name: str = Form(...), position: str = Form(""), monthly_income: float = Form(...),
     passport_photo: UploadFile = File(None), face_photo: UploadFile = File(None),
+    face_side_photo: UploadFile = File(None),
 ):
     iin = iin.strip()
     error = None
     reason = None  # short code for the log (we never log the IIN or the e-mail itself)
     has_face = face_photo is not None and bool(face_photo.filename)
+    # Optional second reference photo for the face check: the face from the side.
+    has_side = face_side_photo is not None and bool(face_side_photo.filename)
     # Check 1: IIN must be exactly 12 characters and all of them digits.
     if len(iin) != 12 or not iin.isdigit():
         error = "IIN must contain exactly 12 digits."
@@ -698,9 +627,12 @@ def register(
         error = "Monthly income cannot be negative."
         reason = "negative_income"
     # Check 3: the 3x4 photo (used by the face check) must be a JPG or PNG.
-    elif has_face and not face_photo.filename.lower().endswith((".jpg", ".jpeg", ".png")):
+    elif has_face and not face_photo.filename.lower().endswith(FACE_PHOTO_EXTENSIONS):
         error = "The 3x4 photo must be a JPG or PNG file."
         reason = "bad_face_photo"
+    elif has_side and not face_side_photo.filename.lower().endswith(FACE_PHOTO_EXTENSIONS):
+        error = "The side photo must be a JPG or PNG file."
+        reason = "bad_face_side_photo"
 
     client_id = None
     if error is None:
@@ -722,6 +654,8 @@ def register(
         save_document(client_id, "passport", passport_photo)
     if has_face:
         save_document(client_id, "face", face_photo)
+    if has_side:
+        save_document(client_id, "face_side", face_side_photo)
     return RedirectResponse("/login?registered=1", status_code=303)
 
 
@@ -770,17 +704,6 @@ def client_dashboard(request: Request):
     return templates.TemplateResponse(request, "dashboard.html",
                                       {"client": client, "income": income,
                                        "user_name": client["full_name"]})
-
-
-@app.get("/face", include_in_schema=False)
-def face_page(request: Request):
-    # Webcam page. ?next=apply: after a match the saved application is sent automatically.
-    client_id = current_client_id(request)
-    client = database.get_client(client_id) if client_id else None
-    if client is None:
-        return RedirectResponse("/login", status_code=303)
-    return templates.TemplateResponse(request, "face.html",
-                                      {"client": client, "user_name": client["full_name"]})
 
 
 @app.get("/admin", include_in_schema=False)

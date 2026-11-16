@@ -51,13 +51,12 @@ def bearer(login, password):
 
 
 def face_token_for(client_id, minutes=5):
-    # A one-time face_token as if the client had just passed POST /api/face/verify
+    # A one-time face_token as if the client had just passed the face check (match + head turns)
     # (no camera and no OpenCV needed). Clients must send it with POST /api/applications.
-    import database
-    import main
+    from face_auth import storage
 
     token = "test-face-token-" + str(client_id) + "-" + os.urandom(6).hex()
-    database.save_face_token(client_id, main.face_token_hash(token), minutes)
+    storage.save_token_hash(client_id, storage.sha256(token), minutes)
     return token
 
 

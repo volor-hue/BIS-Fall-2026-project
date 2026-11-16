@@ -472,7 +472,7 @@ def test_launcher_path_port_token_and_cleanup(tmp_path, monkeypatch, capsys):
 
 def test_web_api_is_still_the_original_18_plus_jwt_auth_and_face(client):
     # 18 original operations + 3 JWT auth endpoints (/api/auth/register, /login, /me)
-    # + 1 face check (/api/face/verify).
+    # + 2 face check steps (/api/face/verify, /api/face/liveness).
     spec = client.get("/openapi.json").json()
     operations = [
         (method, path)
@@ -480,6 +480,6 @@ def test_web_api_is_still_the_original_18_plus_jwt_auth_and_face(client):
         for method in methods
         if method in {"get", "post", "put", "delete", "patch"} and path.startswith("/api")
     ]
-    assert len(operations) == 22
+    assert len(operations) == 23
     assert "telegram" not in str(spec).lower()
     assert client.get("/docs").status_code == 200

@@ -20,12 +20,20 @@ python run.py                 # сайт http://127.0.0.1:8001 + Telegram-бот
 ```
 mfo-prototype/
 ├── main.py              # FastAPI: REST API (JSON) + HTML-страницы
-├── database.py          # SQLite: 8 таблиц по ERD + face_tokens + Telegram, все SQL-запросы
+├── database.py          # SQLite: 8 таблиц по ERD + Telegram, все SQL-запросы
 ├── approval.py          # бизнес-правила: одобрение, автопроверки, график платежей
 ├── log_config.py        # логи: logs/app.log (запросы, ошибки) и logs/audit.log (кто что сделал)
 ├── rate_limit.py        # защита от спама запросами (slowapi): лимиты по IP, ответ 429
 ├── auth_jwt.py          # JWT (HS256): выдача и проверка подписанных токенов входа
-├── face_verify.py       # проверка лица: YuNet находит лицо, SFace делает вектор, косинусное сходство
+├── face_auth/           # ВСЁ про проверку лица (подробно: docs/FACE_AUTH_RU.md)
+│   ├── config.py        # настройки и пороги (FACE_* из .env)
+│   ├── engine.py        # OpenCV: YuNet находит лицо и 5 точек, SFace делает вектор из 128 чисел
+│   ├── matching.py      # косинусное сходство, лучшее из всех фото, обычный и зеркальный кадр
+│   ├── liveness.py      # математика поворота головы (защита от фото на телефоне)
+│   ├── service.py       # шаг 1 (сравнение с фото) и шаг 2 (повороты головы)
+│   ├── storage.py       # таблицы face_challenges и face_tokens (одноразовые, только хэши)
+│   ├── gate.py          # без face_token заявку не принять (403)
+│   └── router.py        # /api/face/verify, /api/face/liveness, страница /face
 ├── run.py               # одна команда: сайт (127.0.0.1:8001) + Telegram-бот
 ├── telegram_*.py        # Telegram-бот клиента (см. README_TELEGRAM.md)
 ├── .env.example         # образец .env: токен бота, лимиты запросов (скопировать в .env)
@@ -39,7 +47,7 @@ mfo-prototype/
 │   ├── register.html    # регистрация (clients + employment + documents)
 │   ├── login.html       # вход клиента (email) или сотрудника (login)
 │   ├── dashboard.html   # кабинет клиента: заявки, кредиты, график, оплата
-│   ├── face.html        # веб-камера: снимок -> POST /api/face/verify -> отправка заявки
+│   ├── face.html        # веб-камера: смотрите прямо -> поверните голову вправо/влево -> отправка заявки
 │   └── admin.html       # кабинет сотрудника: заявки, проверки, Approve/Reject, кредиты
 ├── tests/
 │   ├── conftest.py      # общая настройка тестов (временная БД и папка логов)
@@ -49,7 +57,9 @@ mfo-prototype/
 │   ├── test_rate_limit.py # тесты лимитов: после N запросов ответ 429 и WARNING в логе
 │   ├── test_jwt.py      # тесты JWT: подпись, срок, подделка, /api/auth/*, cookie
 │   ├── test_access.py   # тесты доступа: 401 без токена, 403 к чужим данным, права сотрудника
-│   ├── test_face.py     # тесты проверки лица и face-гейта (без настоящих фото, verify подменяется)
+│   ├── test_face.py     # тесты проверки лица через API и face-гейта (без настоящих фото, нейросети подменяются)
+│   ├── test_face_liveness.py # тесты математики поворота, зеркала, лучшего из фото (выдуманные точки)
+│   ├── face_fakes.py    # выдуманные «лица» для тестов
 │   └── test_telegram.py, test_staff_launcher.py  # тесты бота и run.py
 ├── models/              # создаётся сама: модели YuNet + SFace (в git не попадает)
 ├── uploads/             # сюда сохраняются загруженные документы
@@ -62,7 +72,7 @@ mfo-prototype/
 ## База данных (по ERD команды)
 
 8 таблиц: `clients`, `employees`, `employment`, `documents`, `loan_applications`, `client_checks`, `loans`, `repayments`.
-Плюс служебные таблицы вне ERD: `face_tokens` (одноразовые токены проверки лица, хранится только SHA-256) и таблицы Telegram-бота (`telegram_links`, `telegram_pairing_codes`, `telegram_link_attempts`).
+Плюс служебные таблицы вне ERD: `face_challenges` и `face_tokens` (задание на поворот головы и одноразовый токен проверки лица, хранится только SHA-256; создаёт `face_auth/storage.py`) и таблицы Telegram-бота (`telegram_links`, `telegram_pairing_codes`, `telegram_link_attempts`).
 Диаграмма и все связи описаны в [`docs/ERD.md`](docs/ERD.md).
 
 **Что мы добавили к ERD** (это отмечено и в комментариях в `database.py`):
@@ -159,7 +169,8 @@ python run.py --web-only   # только сайт
 | GET | `/api/loans/{loan_id}` | loans | один кредит (сколько платежей оплачено) |
 | GET | `/api/loans/{loan_id}/repayments` | repayments | график платежей |
 | POST | `/api/repayments/{payment_id}/pay` | repayments | отметить платёж как Paid |
-| POST | `/api/face/verify` | documents, face_tokens | снимок с веб-камеры (form-data `file` или `image_base64`) сравнивается с фото 3x4; при совпадении выдаётся одноразовый `face_token` |
+| POST | `/api/face/verify` | documents, face_challenges | шаг 1: снимок «смотрите прямо» (form-data `file` или `image_base64`) сравнивается с фото 3x4 и фото сбоку; при совпадении выдаётся задание `challenge_id` + порядок поворотов `steps` |
+| POST | `/api/face/liveness` | face_challenges, face_tokens | шаг 2: кадры поворотов (`challenge_id`, `frames_right`, `frames_left`); если повороты настоящие, выдаётся одноразовый `face_token` |
 
 > **Face-гейт:** клиент может подать заявку (`POST /api/applications`) только с полем `face_token` из успешной
 > проверки лица (одноразовый, живёт 5 минут). Без него ответ **403**. Сотрудник, заводящий заявку за клиента, проверку не проходит.
@@ -172,10 +183,12 @@ python run.py --web-only   # только сайт
    - IIN `050101500123`, Birth date `2005-01-01`, Email `client@test.kz`, Password `pass123`;
    - Employer `Kaspi`, **Monthly income `300000`**, приложите любую картинку как паспорт
      и **своё фото 3x4** (JPG/PNG) в поле «Photo 3x4» — с ним будет сравниваться веб-камера.
+     По желанию: фото лица сбоку (голова повёрнута на 30-45°) в поле «Side photo».
    - Проверка ошибки: с IIN `123` появится сообщение «exactly 12 digits».
 2. Войдите как `client@test.kz` / `pass123`.
-3. Каждая заявка: **Submit application** → страница `/face` (разрешите доступ к камере) → **Take snapshot and verify**.
-   Если лицо совпало, заявка отправится сама; если нет, заявка не отправляется.
+3. Каждая заявка: **Submit application** → страница `/face` (разрешите доступ к камере) → **Начать проверку**.
+   Смотрите прямо, потом поверните голову вправо и влево по подсказке (порядок случайный).
+   Если лицо совпало и повороты настоящие, заявка отправится сама; если нет, заявка не отправляется.
    Заявка **400000 на 12 мес.** даёт **Approved (Auto)**, в «My loans» появится кредит. Нажмите **Schedule**, чтобы увидеть 12 платежей по 37 823,84 ₸.
 4. Заявка **400000 на 1 мес.** даёт **Rejected (Auto)**: 400 000 больше 40% от 300 000.
 5. Заявка **1000000 на 12 мес.** даёт **Pending Admin Review (Manual)**.
@@ -238,7 +251,8 @@ pytest
 
 События в `audit.log`: `register_ok` / `register_failed`, `login_ok` / `login_failed`, `logout`, `document_uploaded`,
 `application_submitted`, `application_decided`, `loan_issued`, `payment_paid`, `client_deleted`,
-`face_verify` (результат проверки лица: `match` и `score`, сам снимок не пишется), `face_gate_denied` (заявка без
+`face_verify` (шаг 1: `match` и `score`, сам снимок не пишется), `face_liveness` (шаг 2: `passed` и насколько
+повернулась голова), `face_token_issued`, `face_gate_denied` (заявка без
 действующего `face_token`), `rate_limited` (превышен лимит запросов, см. раздел 10).
 
 Пример:
