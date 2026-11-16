@@ -297,6 +297,19 @@ def supervise(commands, env, cwd, stop_event=None):
         stop_processes(procs)
 
 
+def prefetch_face_models():
+    """Download the two face-check models (~38 MB) in the background on the first start,
+    so the first webcam check does not wait for the download. Errors only print a hint."""
+    def work():
+        try:
+            import face_verify
+            face_verify.ensure_models()
+        except Exception as error:  # no internet / no OpenCV: the site still works
+            print(f"Модели для проверки лица не скачаны ({type(error).__name__}). "
+                  "Они скачаются при первой проверке лица.", file=sys.stderr)
+    threading.Thread(target=work, daemon=True).start()
+
+
 def main(argv=None):
     reset_shutdown()
     previous_int = signal.getsignal(signal.SIGINT)
@@ -313,6 +326,8 @@ def main(argv=None):
                 return 3
             return 2
         print(format_banner(plan))
+        if plan.start_web:
+            prefetch_face_models()
         signal.signal(signal.SIGINT, on_stop)
         signal.signal(signal.SIGTERM, on_stop)
         try:

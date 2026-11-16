@@ -3,6 +3,8 @@
 #   no token -> 401, client -> only own data (403 for others), employee -> everything.
 import pytest
 
+from conftest import face_token_for
+
 ALICE = {"iin": "900101300111", "full_name": "Alice", "birth_date": "1990-01-01", "phone": "+77010000001",
          "email": "alice@test.kz", "password": "alice123",
          "employer_name": "Kaspi", "position": "Dev", "monthly_income": 300000}
@@ -21,7 +23,7 @@ def world(client, staff, as_user):
     for name, user in (("alice", alice), ("bob", bob)):
         me = user.get("/api/auth/me").json()["user_id"]
         app = user.post("/api/applications", json={"client_id": me, "requested_amount": 100000,
-                                                    "term_months": 12})
+                                                    "term_months": 12, "face_token": face_token_for(me)})
         assert app.status_code == 201, app.text
         payment = user.get(f"/api/loans/{app.json()['loan_id']}/repayments").json()[0]
         ids[name] = {"client": me, "app": app.json()["application_id"],
@@ -114,7 +116,8 @@ def test_employee_only_endpoints_refuse_clients(world, method, path):
 def test_decision_uses_employee_from_token(world, client):
     alice, me = world["alice"], world["ids"]["alice"]
     big = alice.post("/api/applications", json={"client_id": me["client"], "requested_amount": 1000000,
-                                                "term_months": 12}).json()
+                                                "term_months": 12,
+                                                "face_token": face_token_for(me["client"])}).json()
     assert big["status"] == "Pending Admin Review"
     # No employee_id in the body: it is taken from the JWT.
     r = world["staff"].post(f"/api/applications/{big['application_id']}/decision", json={"decision": "approve"})

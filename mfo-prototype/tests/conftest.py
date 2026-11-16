@@ -50,6 +50,17 @@ def bearer(login, password):
     return {"Authorization": "Bearer " + auth_jwt.create_token(*user)}
 
 
+def face_token_for(client_id, minutes=5):
+    # A one-time face_token as if the client had just passed POST /api/face/verify
+    # (no camera and no OpenCV needed). Clients must send it with POST /api/applications.
+    import database
+    import main
+
+    token = "test-face-token-" + str(client_id) + "-" + os.urandom(6).hex()
+    database.save_face_token(client_id, main.face_token_hash(token), minutes)
+    return token
+
+
 @pytest.fixture
 def staff(client):
     # A separate TestClient logged in as the seeded employee "admin" (Bearer token in every request).

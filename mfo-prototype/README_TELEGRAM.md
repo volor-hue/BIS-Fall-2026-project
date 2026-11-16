@@ -189,7 +189,7 @@ pytest
 
 Исходные тесты прототипа (`tests/test_approval.py`, `tests/test_api.py`) остаются. Новые — `tests/test_telegram.py`: временная база, mock-сессия aiogram, гонка двух потоков, просрочка, повтор кода, лимит попыток, группа, подмена callback. Сеть Telegram не используется.
 
-На сборке этого архива: **50 passed** (24 прежних теста прототипа, 18 в `tests/test_telegram.py`, 8 в `tests/test_staff_launcher.py`). То же число записано в `TELEGRAM_MANIFEST.txt`.
+На сборке Telegram-части было **50 passed** (24 прежних теста прототипа, 18 в `tests/test_telegram.py`, 8 в `tests/test_staff_launcher.py`); сейчас весь `pytest` проекта включает ещё тесты JWT, логов, rate limit и проверки лица.
 
 ## Ограничения
 

@@ -1,28 +1,45 @@
 # Microfinance IS: как запустить и проверить прототип
 
 Прототип системы выдачи микрокредитов (рынок Казахстана, суммы в KZT).
-Стек: **FastAPI + sqlite3 (встроен в Python) + HTML/Bootstrap 5 + JS fetch**. Docker не нужен.
+Стек: **FastAPI + sqlite3 (встроен в Python) + HTML/Bootstrap 5 + JS fetch**, проверка лица по веб-камере на
+**OpenCV (YuNet + SFace)**, Telegram-бот на aiogram. Docker не нужен.
+
+## Быстрый старт (3 команды)
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env          # Windows: copy .env.example .env  — и впишите TELEGRAM_BOT_TOKEN
+python run.py                 # сайт http://127.0.0.1:8001 + Telegram-бот
+```
+- Без токена бота: `python run.py --web-only` (только сайт).
+- Модели для проверки лица (~38 МБ) скачиваются сами в папку `models/` при первом запуске.
+- Подробно про бота: [`README_TELEGRAM.md`](README_TELEGRAM.md), про проверку лица: [`docs/FACE_AUTH_RU.md`](docs/FACE_AUTH_RU.md).
 
 ## Структура проекта
 
 ```
 mfo-prototype/
 ├── main.py              # FastAPI: REST API (JSON) + HTML-страницы
-├── database.py          # SQLite: 8 таблиц по ERD, внешние ключи, все SQL-запросы
+├── database.py          # SQLite: 8 таблиц по ERD + face_tokens + Telegram, все SQL-запросы
 ├── approval.py          # бизнес-правила: одобрение, автопроверки, график платежей
 ├── log_config.py        # логи: logs/app.log (запросы, ошибки) и logs/audit.log (кто что сделал)
 ├── rate_limit.py        # защита от спама запросами (slowapi): лимиты по IP, ответ 429
 ├── auth_jwt.py          # JWT (HS256): выдача и проверка подписанных токенов входа
+├── face_verify.py       # проверка лица: YuNet находит лицо, SFace делает вектор, косинусное сходство
+├── run.py               # одна команда: сайт (127.0.0.1:8001) + Telegram-бот
+├── telegram_*.py        # Telegram-бот клиента (см. README_TELEGRAM.md)
 ├── .env.example         # образец .env: токен бота, лимиты запросов (скопировать в .env)
 ├── requirements.txt     # библиотеки
 ├── pytest.ini           # настройки pytest
 ├── docs/
-│   └── ERD.md           # ER-диаграмма (mermaid) и таблица связей
+│   ├── ERD.md           # ER-диаграмма (mermaid) и таблица связей
+│   └── FACE_AUTH_RU.md  # как работает проверка лица (для защиты)
 ├── templates/           # HTML-страницы
 │   ├── base.html        # общий шаблон (меню, Bootstrap, JS-помощники)
 │   ├── register.html    # регистрация (clients + employment + documents)
 │   ├── login.html       # вход клиента (email) или сотрудника (login)
 │   ├── dashboard.html   # кабинет клиента: заявки, кредиты, график, оплата
+│   ├── face.html        # веб-камера: снимок -> POST /api/face/verify -> отправка заявки
 │   └── admin.html       # кабинет сотрудника: заявки, проверки, Approve/Reject, кредиты
 ├── tests/
 │   ├── conftest.py      # общая настройка тестов (временная БД и папка логов)
@@ -31,7 +48,10 @@ mfo-prototype/
 │   ├── test_logging.py  # тесты логов: события пишутся, пароли и ИИН не пишутся
 │   ├── test_rate_limit.py # тесты лимитов: после N запросов ответ 429 и WARNING в логе
 │   ├── test_jwt.py      # тесты JWT: подпись, срок, подделка, /api/auth/*, cookie
-│   └── test_access.py   # тесты доступа: 401 без токена, 403 к чужим данным, права сотрудника
+│   ├── test_access.py   # тесты доступа: 401 без токена, 403 к чужим данным, права сотрудника
+│   ├── test_face.py     # тесты проверки лица и face-гейта (без настоящих фото, verify подменяется)
+│   └── test_telegram.py, test_staff_launcher.py  # тесты бота и run.py
+├── models/              # создаётся сама: модели YuNet + SFace (в git не попадает)
 ├── uploads/             # сюда сохраняются загруженные документы
 ├── logs/                # создаётся сама: app.log и audit.log (в git не попадает)
 └── README_RUN.md        # эта инструкция
@@ -42,6 +62,7 @@ mfo-prototype/
 ## База данных (по ERD команды)
 
 8 таблиц: `clients`, `employees`, `employment`, `documents`, `loan_applications`, `client_checks`, `loans`, `repayments`.
+Плюс служебные таблицы вне ERD: `face_tokens` (одноразовые токены проверки лица, хранится только SHA-256) и таблицы Telegram-бота (`telegram_links`, `telegram_pairing_codes`, `telegram_link_attempts`).
 Диаграмма и все связи описаны в [`docs/ERD.md`](docs/ERD.md).
 
 **Что мы добавили к ERD** (это отмечено и в комментариях в `database.py`):
@@ -81,11 +102,16 @@ pip install -r requirements.txt
 
 ## 4. Запустить сервер
 ```bash
-uvicorn main:app --reload
+python run.py              # сайт + Telegram-бот (нужен TELEGRAM_BOT_TOKEN в .env)
+python run.py --web-only   # только сайт
 ```
-- Сайт: **http://127.0.0.1:8000**
-- Swagger (все эндпоинты): **http://127.0.0.1:8000/docs**
-- Остановить сервер: `Ctrl + C`
+- Сайт: **http://127.0.0.1:8001**
+- Swagger (все эндпоинты): **http://127.0.0.1:8001/docs**
+- Остановить: `Ctrl + C`
+- Можно и без run.py: `uvicorn main:app --reload --port 8001`.
+- При первом запуске в `models/` скачиваются модели для проверки лица (~38 МБ, нужен интернет).
+
+> Ниже в примерах адрес `127.0.0.1:8000` — если вы запускали через `run.py`, используйте порт **8001**.
 
 ## Сотрудник по умолчанию (создаётся автоматически)
 
@@ -133,6 +159,10 @@ uvicorn main:app --reload
 | GET | `/api/loans/{loan_id}` | loans | один кредит (сколько платежей оплачено) |
 | GET | `/api/loans/{loan_id}/repayments` | repayments | график платежей |
 | POST | `/api/repayments/{payment_id}/pay` | repayments | отметить платёж как Paid |
+| POST | `/api/face/verify` | documents, face_tokens | снимок с веб-камеры (form-data `file` или `image_base64`) сравнивается с фото 3x4; при совпадении выдаётся одноразовый `face_token` |
+
+> **Face-гейт:** клиент может подать заявку (`POST /api/applications`) только с полем `face_token` из успешной
+> проверки лица (одноразовый, живёт 5 минут). Без него ответ **403**. Сотрудник, заводящий заявку за клиента, проверку не проходит.
 
 > API защищён JWT (см. раздел «JWT-авторизация» ниже). В `/docs` сначала нажмите **Authorize**.
 
@@ -140,10 +170,13 @@ uvicorn main:app --reload
 
 1. http://127.0.0.1:8000/register: зарегистрируйте клиента
    - IIN `050101500123`, Birth date `2005-01-01`, Email `client@test.kz`, Password `pass123`;
-   - Employer `Kaspi`, **Monthly income `300000`**, приложите любую картинку как паспорт.
+   - Employer `Kaspi`, **Monthly income `300000`**, приложите любую картинку как паспорт
+     и **своё фото 3x4** (JPG/PNG) в поле «Photo 3x4» — с ним будет сравниваться веб-камера.
    - Проверка ошибки: с IIN `123` появится сообщение «exactly 12 digits».
 2. Войдите как `client@test.kz` / `pass123`.
-3. Заявка **400000 на 12 мес.** даёт **Approved (Auto)**, в «My loans» появится кредит. Нажмите **Schedule**, чтобы увидеть 12 платежей по 37 823,84 ₸.
+3. Каждая заявка: **Submit application** → страница `/face` (разрешите доступ к камере) → **Take snapshot and verify**.
+   Если лицо совпало, заявка отправится сама; если нет, заявка не отправляется.
+   Заявка **400000 на 12 мес.** даёт **Approved (Auto)**, в «My loans» появится кредит. Нажмите **Schedule**, чтобы увидеть 12 платежей по 37 823,84 ₸.
 4. Заявка **400000 на 1 мес.** даёт **Rejected (Auto)**: 400 000 больше 40% от 300 000.
 5. Заявка **1000000 на 12 мес.** даёт **Pending Admin Review (Manual)**.
 6. Logout, затем войдите как `admin` / `admin123`. Нажмите **Checks** у заявки (видно `AMOUNT_LIMIT: MANUAL_REVIEW`), потом **Approve**.
@@ -159,7 +192,7 @@ uvicorn main:app --reload
 2. `POST /api/clients/1/employment` с телом `{"employer_name":"Kaspi","position":"Analyst","monthly_income":300000}`.
 3. `POST /api/clients/1/documents`: выберите файл. В ответе будут `file_path` и `file_hash`.
 4. `GET /api/clients/1` покажет `total_monthly_income: 300000`.
-5. `POST /api/applications` три раза:
+5. `POST /api/applications` три раза (вы вошли через Authorize как `admin`, поэтому `face_token` не нужен):
    - `{"client_id":1,"requested_amount":400000,"term_months":12}` даёт Approved / Auto и `loan_id`;
    - `{"client_id":1,"requested_amount":400000,"term_months":1}` даёт Rejected / Auto;
    - `{"client_id":1,"requested_amount":1000000,"term_months":12}` даёт Pending Admin Review / Manual.
@@ -205,7 +238,8 @@ pytest
 
 События в `audit.log`: `register_ok` / `register_failed`, `login_ok` / `login_failed`, `logout`, `document_uploaded`,
 `application_submitted`, `application_decided`, `loan_issued`, `payment_paid`, `client_deleted`,
-`rate_limited` (превышен лимит запросов, см. раздел 10).
+`face_verify` (результат проверки лица: `match` и `score`, сам снимок не пишется), `face_gate_denied` (заявка без
+действующего `face_token`), `rate_limited` (превышен лимит запросов, см. раздел 10).
 
 Пример:
 ```
@@ -236,7 +270,7 @@ grep "user=employee:1" logs/audit.log        # всё, что сделал со�
 | Что | Лимит по умолчанию | Переменная |
 |-----|--------------------|------------|
 | Вход `POST /login` и регистрация `POST /register` | 5 в минуту | `MFO_RATE_LIMIT_AUTH` |
-| Подача заявки `POST /api/applications` и загрузка документов `POST /api/clients/{id}/documents` | 10 в минуту | `MFO_RATE_LIMIT_SUBMIT` |
+| Подача заявки `POST /api/applications`, загрузка документов `POST /api/clients/{id}/documents` и проверка лица `POST /api/face/verify` | 10 в минуту | `MFO_RATE_LIMIT_SUBMIT` |
 | Все остальные адреса (API и страницы) | 60 в минуту | `MFO_RATE_LIMIT_DEFAULT` |
 
 - У каждого адреса свой счётчик. `/api/clients/1` и `/api/clients/2` считаются одним адресом, поэтому перебор id лимит не обходит.
@@ -271,6 +305,7 @@ MFO_RATE_LIMIT_AUTH=5/minute;50/hour
   свой счётчик. В реальной системе нужно общее хранилище (Redis). За обратным прокси (nginx) все запросы приходят
   с IP прокси и делят один лимит: нужно настроить доверенный заголовок `X-Forwarded-For`.
 - Ставка одна для всех (24% годовых), просрочки и штрафы не считаются.
+- Проверка лица без liveness: распечатанное фото перед камерой может пройти (см. `docs/FACE_AUTH_RU.md`).
 
 ## JWT-авторизация
 

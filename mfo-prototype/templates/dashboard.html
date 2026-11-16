@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>Client dashboard</h2>
+<h2>Client dashboard <a href="/face" class="btn btn-outline-primary btn-sm ms-2">Face verification</a></h2>
 <p>IIN: {{ client.iin }} &middot; Total monthly income (all jobs): <b>{{ "{:,.0f}".format(income) }} KZT</b></p>
 
 <div class="row">
@@ -15,6 +15,7 @@
         <label class="form-label">Purpose</label>
         <input id="purpose" class="form-control mb-3" placeholder="e.g. small business">
         <button class="btn btn-success w-100">Submit application</button>
+        <small class="text-muted">Next step: a webcam face check against your 3x4 photo.</small>
       </form>
       <div id="message" class="mt-2"></div>
       <small class="text-muted">Up to 500 000 KZT is decided automatically (40% income rule).
@@ -97,8 +98,9 @@ async function pay(paymentId) {
   loadLoans();
 }
 
-// 5) Send a new application as JSON.
-document.getElementById("loan-form").addEventListener("submit", async (event) => {
+// 5) Save the application and go to the face check first.
+// face.html sends it after a successful match (the server refuses it without a face_token anyway).
+document.getElementById("loan-form").addEventListener("submit", (event) => {
   event.preventDefault(); // do not reload the page
   const body = {
     client_id: CLIENT_ID,
@@ -106,20 +108,8 @@ document.getElementById("loan-form").addEventListener("submit", async (event) =>
     term_months: Number(document.getElementById("term").value),
     purpose: document.getElementById("purpose").value,
   };
-  const response = await fetch("/api/applications", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const result = await response.json();
-  const msg = document.getElementById("message");
-  if (response.ok) {
-    msg.innerHTML = `<div class="alert alert-${badge(result.status)}">Result: ${esc(result.status)} (${esc(result.approval_type)})</div>`;
-  } else {
-    msg.innerHTML = `<div class="alert alert-danger">${esc(JSON.stringify(result.detail))}</div>`;
-  }
-  loadApplications();
-  loadLoans();
+  sessionStorage.setItem("pending_application", JSON.stringify(body));
+  location.href = "/face?next=apply";
 });
 
 // Load now and then every 3 seconds ("real-time" status).

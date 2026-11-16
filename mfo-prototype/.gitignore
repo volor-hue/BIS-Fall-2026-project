@@ -3,6 +3,7 @@ venv/
 __pycache__/
 *.pyc
 mfo.db
+*.db
 *.db-journal
 *.db-wal
 *.db-shm
@@ -11,3 +12,5 @@ mfo.db
 uploads/*
 !uploads/.gitkeep
 logs/
+# Face-check models are downloaded automatically on the first start (~38 MB).
+models/
