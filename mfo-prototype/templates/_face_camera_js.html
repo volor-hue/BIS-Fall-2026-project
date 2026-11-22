@@ -6,13 +6,31 @@ const FaceCam = (() => {
   const FRAMES_PER_TURN = 8;     // frames recorded during one head turn
   const FRAME_GAP_MS = 250;      // 8 x 250 ms = 2 seconds per turn
   const TURN_TEXT = { right: "Поверните голову вправо →", left: "← Поверните голову влево" };
+  // Short labels inside the semi-transparent hint over the video (see _face_camera.html).
+  const HINT_LABEL = { straight: "Смотрите прямо", right: "Направо →", left: "← Налево",
+                       ok: "Готово ✔", wait: "Проверяю..." };
   const video = document.getElementById("video");
   const canvas = document.getElementById("canvas");
   const instruction = document.getElementById("instruction");
   const progress = document.getElementById("progress");
+  const hintBox = document.getElementById("face-hint");
+  const hintLabel = document.getElementById("face-hint-label");
   const sleep = (ms) => new Promise(ok => setTimeout(ok, ms));
   const say = (text) => instruction.textContent = text;
   const setProgress = (part) => progress.style.width = Math.round(part * 100) + "%";
+
+  // Semi-transparent picture over the video: "straight" | "right" | "left" | "ok" | "wait" | "" (hide).
+  // "right" always points to the right side of the screen = the user's own right (the preview is a mirror).
+  function hint(step) {
+    hintBox.dataset.step = step || "";
+    hintLabel.textContent = HINT_LABEL[step] || "";
+    hintBox.classList.toggle("show", !!step);
+  }
+  // A short checkmark after a finished step.
+  async function stepDone(ms = 700) {
+    hint("ok");
+    await sleep(ms);
+  }
 
   // Turn on the webcam (once).
   async function open() {
@@ -33,11 +51,13 @@ const FaceCam = (() => {
   // "Look straight": `count` frames into form field `field`.
   async function captureStraight(form, field, count) {
     say("Смотрите прямо в камеру");
+    hint("straight");
     await sleep(1200);
     for (let i = 0; i < count; i++) {
       form.append(field, await grab(), `front${i}.jpg`);
       await sleep(300);
     }
+    await stepDone();
   }
 
   // The head turns in the order the SERVER chose: frames go to frames_right / frames_left.
@@ -45,13 +65,18 @@ const FaceCam = (() => {
     for (let s = 0; s < steps.length; s++) {
       const direction = steps[s];
       say(TURN_TEXT[direction]);
+      hint(direction);
       for (let i = 0; i < FRAMES_PER_TURN; i++) {
         await sleep(FRAME_GAP_MS);
         form.append("frames_" + direction, await grab(), `${direction}${i}.jpg`);
         setProgress(from + (to - from) * (s * FRAMES_PER_TURN + i + 1) / (steps.length * FRAMES_PER_TURN));
       }
-      say("Смотрите прямо");
-      await sleep(900);
+      await stepDone();
+      if (s < steps.length - 1) {
+        say("Смотрите прямо");
+        hint("straight");
+        await sleep(600);
+      }
     }
   }
 
@@ -64,21 +89,27 @@ const FaceCam = (() => {
 
   // The whole "Пройти биометрию": start -> straight -> turns -> finish. Returns the server answer.
   async function enroll() {
-    await open();
-    setProgress(0);
-    const start = await post("/api/face/enroll/start", new FormData());
-    const form = new FormData();
-    form.append("enroll_id", start.enroll_id);
-    await captureStraight(form, "frames_front", 3);
-    setProgress(0.15);
-    await captureTurns(start.steps, form, 0.15, 0.9);
-    say("Проверяю...");
-    const result = await post("/api/face/enroll/finish", form);
-    setProgress(result.passed ? 1 : 0);
-    say(result.passed ? "Биометрия пройдена ✔" : "Не получилось");
-    return result;
+    try {
+      await open();
+      setProgress(0);
+      const start = await post("/api/face/enroll/start", new FormData());
+      const form = new FormData();
+      form.append("enroll_id", start.enroll_id);
+      await captureStraight(form, "frames_front", 3);
+      setProgress(0.15);
+      await captureTurns(start.steps, form, 0.15, 0.9);
+      say("Проверяю...");
+      hint("wait");
+      const result = await post("/api/face/enroll/finish", form);
+      setProgress(result.passed ? 1 : 0);
+      say(result.passed ? "Биометрия пройдена ✔" : "Не получилось");
+      if (result.passed) await stepDone(1000);
+      return result;
+    } finally {
+      hint("");   // hide the overlay on success, failure and errors
+    }
   }
 
-  return { open, grab, say, sleep, setProgress, captureTurns, post, enroll };
+  return { open, grab, say, hint, stepDone, sleep, setProgress, captureTurns, post, enroll };
 })();
 </script>

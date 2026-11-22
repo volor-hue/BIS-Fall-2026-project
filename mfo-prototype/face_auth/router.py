@@ -59,6 +59,8 @@ def create_router(authenticate, current_client_id, oauth2_scheme, templates):
     """authenticate / current_client_id / oauth2_scheme / templates come from main.py,
     so the face package uses exactly the same JWT login as the rest of the app."""
     router = APIRouter()
+    # The camera template (_face_camera.html) mirrors the preview only if the camera itself does not.
+    templates.env.globals["face_camera_mirrored"] = config.CAMERA_MIRRORED
 
     def client_only(request, token):
         user = authenticate(request, token)

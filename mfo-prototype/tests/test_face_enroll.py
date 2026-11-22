@@ -140,3 +140,16 @@ def test_enrollment_rejects_bad_frames(client, fake_engine):
     ok_png = client.post("/api/face/enroll/finish", data={"enroll_id": start["enroll_id"]},
                          files=[("frames_front", ("x.png", FAKE_PNG, "image/png"))])
     assert ok_png.status_code == 200 and ok_png.json()["passed"] is False   # no turn frames
+
+
+def test_camera_box_has_visual_hints_and_mirrored_preview(client, monkeypatch):
+    # The semi-transparent hint over the video (oval / arrow + head / checkmark) is on the page,
+    # and the preview is mirrored with CSS unless the camera already mirrors (FACE_CAMERA_MIRRORED=1).
+    page = client.get("/register").text
+    assert 'id="face-hint"' in page and "l-straight" in page and "l-turn" in page and "l-ok" in page
+    assert "FaceCam.hint" in page or "function hint(" in page
+    assert "#video { transform: scaleX(-1); }" in page
+    import main
+
+    monkeypatch.setitem(main.templates.env.globals, "face_camera_mirrored", True)
+    assert "#video { transform: scaleX(-1); }" not in client.get("/register").text

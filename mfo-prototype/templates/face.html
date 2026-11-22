@@ -80,8 +80,10 @@ async function submitPendingApplication(faceToken) {
   setTimeout(() => { location.href = "/dashboard"; }, 1500);
 }
 
-function verified(faceToken) {
+async function verified(faceToken) {
   FaceCam.say("Проверка пройдена ✔");
+  await FaceCam.stepDone(1000);
+  FaceCam.hint("");
   FaceCam.setProgress(1);
   show("success", "<b>Личность подтверждена ✔</b>");
   if (nextApply) return submitPendingApplication(faceToken);
@@ -95,9 +97,11 @@ button.addEventListener("click", async () => {
     await FaceCam.open();
     // STEP 1: look straight -> compare with the enrolled biometrics.
     FaceCam.say("Смотрите прямо в камеру");
+    FaceCam.hint("straight");
     await FaceCam.sleep(1200);
     const first = new FormData();
     first.append("file", await FaceCam.grab(), "snapshot.jpg");
+    FaceCam.hint("wait");
     show("secondary", "Сравниваю с биометрией... (первый раз дольше: загружаются модели)");
     const match = await FaceCam.post("/api/face/verify", first);
     if (!match.match) {
@@ -106,7 +110,8 @@ button.addEventListener("click", async () => {
         (порог ${match.threshold})<br>Поправьте свет, смотрите в камеру и попробуйте ещё раз. Заявка <b>не</b> отправлена.`);
     }
     FaceCam.setProgress(0.2);
-    if (!match.liveness_required) return verified(match.face_token);
+    if (!match.liveness_required) return await verified(match.face_token);
+    await FaceCam.stepDone();
 
     // STEP 2: head turns in the order the SERVER chose (random).
     show("info", `Лицо совпало (сходство ${fmt(match.score)}). Теперь поворачивайте голову по подсказке.`);
@@ -114,6 +119,7 @@ button.addEventListener("click", async () => {
     form.append("challenge_id", match.challenge_id);
     await FaceCam.captureTurns(match.steps, form, 0.2, 0.9);
     FaceCam.say("Проверяю повороты...");
+    FaceCam.hint("wait");
     const live = await FaceCam.post("/api/face/liveness", form);
     if (!live.passed) {
       FaceCam.say("Не получилось");
@@ -125,6 +131,7 @@ button.addEventListener("click", async () => {
     FaceCam.say("Ошибка");
     show("danger", esc(e.message) + "<br>Если камера не включается: разрешите доступ и откройте сайт как http://127.0.0.1.");
   } finally {
+    FaceCam.hint("");
     button.disabled = false;
   }
 });

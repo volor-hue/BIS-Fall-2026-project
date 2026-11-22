@@ -1,11 +1,78 @@
-{# Camera box shared by register.html ("Пройти биометрию") and face.html (check before a loan). #}
+{# Camera box shared by register.html ("Пройти биометрию") and face.html (check before a loan).
+   On top of the video there is a semi-transparent hint (FaceCam.hint(...) in _face_camera_js.html):
+   oval "смотрите прямо", arrow + head "поверните направо/налево", a checkmark after each step. #}
 <style>
-  /* The PREVIEW is mirrored (like a mirror, easier to follow "turn right").
-     The frames sent to the server are taken from the raw camera picture, NOT mirrored. */
-  #video { transform: scaleX(-1); }
+  /* The PREVIEW looks like a mirror (easier to follow "turn right": the face on the screen moves
+     to the same side as the arrow). Frames sent to the server are taken from the raw camera picture.
+     FACE_CAMERA_MIRRORED=1 means the camera driver already mirrors the picture -> no CSS flip. */
+  {% if not face_camera_mirrored %}#video { transform: scaleX(-1); }{% endif %}
   #instruction { font-size: 1.6rem; min-height: 2.4rem; }
+  .facecam-stage { position: relative; }
+  .facecam-stage video { display: block; }
+  /* The overlay is NOT mirrored: "right" is always the right side of the screen = the user's right. */
+  #face-hint { position: absolute; inset: 0; pointer-events: none; display: flex;
+               align-items: center; justify-content: center; opacity: 0; transition: opacity .3s ease; }
+  #face-hint.show { opacity: 1; }
+  #face-hint svg { width: 100%; height: 100%; }
+  #face-hint .layer { display: none; }
+  #face-hint[data-step="straight"] .l-straight,
+  #face-hint[data-step="right"] .l-turn,
+  #face-hint[data-step="left"] .l-turn,
+  #face-hint[data-step="ok"] .l-ok,
+  #face-hint[data-step="wait"] .l-wait { display: inline; }
+  /* "left" = the same picture as "right", flipped around the middle of the 640x480 box. */
+  #face-hint[data-step="left"] .l-turn { transform: translateX(640px) scaleX(-1); }
+  #face-hint .hint-label { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+               background: rgba(0,0,0,.45); color: #fff; padding: 4px 14px; border-radius: 999px;
+               font-weight: 600; font-size: 1.05rem; white-space: nowrap; }
+  .fh-line { fill: none; stroke: #fff; stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; }
+  .fh-oval { fill: none; stroke: rgba(255,255,255,.75); stroke-width: 5; stroke-dasharray: 18 12;
+             animation: fh-breathe 2s ease-in-out infinite; transform-origin: 320px 230px; }
+  .fh-arrow { animation: fh-nudge 1.1s ease-in-out infinite; }
+  .fh-head { animation: fh-turn 1.1s ease-in-out infinite; transform-origin: 320px 230px; }
+  .fh-ok circle { fill: rgba(25,135,84,.55); }
+  .fh-ok path { animation: fh-pop .35s ease-out; transform-origin: 320px 230px; }
+  .fh-wait circle { fill: none; stroke: rgba(255,255,255,.7); stroke-width: 8; stroke-dasharray: 60 200;
+                    animation: fh-spin 1s linear infinite; transform-origin: 320px 230px; }
+  @keyframes fh-breathe { 0%,100% { opacity: .55; transform: scale(1); } 50% { opacity: .95; transform: scale(1.03); } }
+  @keyframes fh-nudge { 0%,100% { transform: translateX(0); opacity: .55; } 50% { transform: translateX(22px); opacity: 1; } }
+  @keyframes fh-turn { 0%,100% { transform: scaleX(1); } 50% { transform: scaleX(.85); } }
+  @keyframes fh-pop { from { transform: scale(.4); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+  @keyframes fh-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    .fh-oval, .fh-arrow, .fh-head, .fh-ok path, .fh-wait circle { animation: none; }
+  }
 </style>
-<div id="instruction" class="text-center fw-bold mb-2">{{ first_instruction }}</div>
-<video id="video" autoplay playsinline muted class="w-100 bg-dark rounded"></video>
+<div id="instruction" class="text-center fw-bold mb-2" role="status" aria-live="polite">{{ first_instruction }}</div>
+<div class="facecam-stage">
+  <video id="video" autoplay playsinline muted class="w-100 bg-dark rounded"></video>
+  {# aria-hidden: the same instruction is already read out from #instruction above. #}
+  <div id="face-hint" data-step="" aria-hidden="true">
+    <svg viewBox="0 0 640 480" preserveAspectRatio="xMidYMid meet">
+      <!-- look straight: face oval -->
+      <g class="layer l-straight"><ellipse class="fh-oval" cx="320" cy="230" rx="130" ry="170"/></g>
+      <!-- turn right (left = the same group flipped, see CSS) -->
+      <g class="layer l-turn" opacity=".85">
+        <g class="fh-head">
+          <circle class="fh-line" cx="300" cy="230" r="70" fill="rgba(255,255,255,.12)"/>
+          <!-- eyes and nose shifted to the right = head turned to the right -->
+          <circle cx="318" cy="215" r="6" fill="#fff"/><circle cx="350" cy="215" r="6" fill="#fff"/>
+          <path class="fh-line" d="M346 228 L360 246 L344 250"/>
+          <path class="fh-line" d="M322 275 Q340 282 356 272"/>
+        </g>
+        <g class="fh-arrow">
+          <path class="fh-line" d="M410 230 H530" stroke-width="10"/>
+          <path class="fh-line" d="M495 192 L535 230 L495 268" stroke-width="10"/>
+        </g>
+      </g>
+      <!-- step done -->
+      <g class="layer l-ok fh-ok"><circle cx="320" cy="230" r="70"/>
+        <path class="fh-line" d="M285 232 L310 257 L360 205" stroke-width="10"/></g>
+      <!-- server is checking -->
+      <g class="layer l-wait fh-wait"><circle cx="320" cy="230" r="50"/></g>
+    </svg>
+    <div class="hint-label" id="face-hint-label"></div>
+  </div>
+</div>
 <canvas id="canvas" class="d-none"></canvas>
 <div class="progress mt-3" style="height: 8px;"><div id="progress" class="progress-bar" style="width: 0%"></div></div>
