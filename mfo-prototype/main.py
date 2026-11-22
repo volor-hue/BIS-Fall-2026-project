@@ -25,6 +25,7 @@ from slowapi.middleware import SlowAPIMiddleware
 import auth_jwt
 import database
 import face_auth
+import payments
 import rate_limit
 from approval import INTEREST_RATE, build_schedule, decide_application, run_checks
 from log_config import audit, clean, log, mask_login, setup_logging
@@ -569,21 +570,35 @@ def api_list_repayments(loan_id: int, user: dict = Depends(require_user)):
     if loan is None:
         raise HTTPException(404, "Loan not found")
     ensure_own_client(user, loan["client_id"])
-    return database.get_repayments(loan_id)
+    rows = database.get_repayments(loan_id)
+    # Added field: how a paid repayment was paid (card •••• 4242 / PayPal / Kaspi QR), see payments/.
+    methods = payments.storage.methods_for_loan(loan_id)
+    for row in rows:
+        row["paid_method"] = methods.get(row["payment_id"])
+    return rows
 
 
 @app.post("/api/repayments/{payment_id}/pay", tags=["repayments"])
-def api_pay(payment_id: int, request: Request, user: dict = Depends(require_user)):
+def api_pay(payment_id: int, request: Request, body: Optional[payments.PayIn] = None,
+            user: dict = Depends(require_user)):
+    # Optional body {"method": "card"|"paypal"|"kaspi_qr", ...} = the payment window of the dashboard.
+    # No body = "manual" (old API calls and employees), works exactly as before.
     payment = database.get_repayment(payment_id)
     if payment is None:
         raise HTTPException(404, "Payment not found")
-    ensure_own_client(user, database.get_loan(payment["loan_id"])["client_id"])
+    client_id = database.get_loan(payment["loan_id"])["client_id"]
+    ensure_own_client(user, client_id)
     if payment["status"] == "Paid":
         raise HTTPException(400, "This payment is already paid")
+    method, method_detail = payments.choose_method(user, client_id, payment_id, body)
     database.mark_repayment_paid(payment_id)
+    payments.storage.record_transaction(payment_id, client_id, method, method_detail,
+                                        payment["amount_due"], user["role"])
     audit("payment_paid", request, payment_id=payment_id, loan_id=payment["loan_id"],
-          amount=payment["amount_due"])
-    return database.get_repayment(payment_id)
+          amount=payment["amount_due"], paid_with=method)
+    result = database.get_repayment(payment_id)
+    result["paid_method"] = method_detail
+    return result
 
 
 # ---------- face verification (computer vision) ----------
@@ -591,6 +606,10 @@ def api_pay(payment_id: int, request: Request, user: dict = Depends(require_user
 # They use the same JWT login helpers as the rest of the API.
 app.include_router(face_auth.create_router(authenticate=authenticate, current_client_id=current_client_id,
                                            oauth2_scheme=oauth2_scheme, templates=templates))
+
+# ---------- payment methods (cards, PayPal, Kaspi QR) ----------
+# /api/payment-methods/cards... and /api/repayments/{id}/kaspi-qr live in payments/router.py.
+app.include_router(payments.create_router(require_user=require_user, ensure_own_client=ensure_own_client))
 
 
 # ============================================================

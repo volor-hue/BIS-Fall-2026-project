@@ -34,6 +34,12 @@ mfo-prototype/
 │   ├── storage.py       # таблицы face_enrollments, face_references, face_challenges, face_tokens
 │   ├── gate.py          # без face_token заявку не принять (403), без биометрии не зарегистрироваться
 │   └── router.py        # /api/face/enroll/*, /api/face/verify, /api/face/liveness, страница /face
+├── payments/            # способы оплаты платежа (ДЕМО, деньги не списываются)
+│   ├── cards.py         # проверка карты: Луна, тип (Visa/Mastercard/Mir...), срок ММ/ГГ, CVV
+│   ├── storage.py       # таблицы payment_cards, kaspi_qr_sessions, payment_transactions
+│   ├── qr.py            # маленький генератор QR-кода на чистом Python -> SVG (Kaspi QR)
+│   ├── service.py       # чем оплачен платёж: карта / PayPal / Kaspi QR / manual
+│   └── router.py        # /api/payment-methods/cards..., /api/repayments/{id}/kaspi-qr
 ├── run.py               # одна команда: сайт (127.0.0.1:8001) + Telegram-бот
 ├── telegram_*.py        # Telegram-бот клиента (см. README_TELEGRAM.md)
 ├── .env.example         # образец .env: токен бота, лимиты запросов (скопировать в .env)
@@ -74,7 +80,7 @@ mfo-prototype/
 ## База данных (по ERD команды)
 
 8 таблиц: `clients`, `employees`, `employment`, `documents`, `loan_applications`, `client_checks`, `loans`, `repayments`.
-Плюс служебные таблицы вне ERD: `face_enrollments`, `face_references` (биометрия: 3 вектора лица клиента, без картинок), `face_challenges` и `face_tokens` (задание на поворот головы и одноразовый токен проверки лица, хранится только SHA-256; создаёт `face_auth/storage.py`) и таблицы Telegram-бота (`telegram_links`, `telegram_pairing_codes`, `telegram_link_attempts`).
+Плюс служебные таблицы вне ERD: `face_enrollments`, `face_references` (биометрия: 3 вектора лица клиента, без картинок), `face_challenges` и `face_tokens` (задание на поворот головы и одноразовый токен проверки лица, хранится только SHA-256; создаёт `face_auth/storage.py`), таблицы оплаты `payment_cards` (только holder, тип, последние 4 цифры, срок, основная ли), `kaspi_qr_sessions`, `payment_transactions` (создаёт `payments/storage.py`) и таблицы Telegram-бота (`telegram_links`, `telegram_pairing_codes`, `telegram_link_attempts`).
 Диаграмма и все связи описаны в [`docs/ERD.md`](docs/ERD.md).
 
 **Что мы добавили к ERD** (это отмечено и в комментариях в `database.py`):
@@ -170,7 +176,12 @@ python run.py --web-only   # только сайт
 | GET | `/api/loans` | loans | все кредиты (можно `?client_id=1`) |
 | GET | `/api/loans/{loan_id}` | loans | один кредит (сколько платежей оплачено) |
 | GET | `/api/loans/{loan_id}/repayments` | repayments | график платежей |
-| POST | `/api/repayments/{payment_id}/pay` | repayments | отметить платёж как Paid |
+| POST | `/api/repayments/{payment_id}/pay` | repayments, payment_transactions | отметить платёж как Paid. Необязательное тело `{"method": "card", "card_id": 1}` / `{"method": "paypal", "paypal_email": "..."}` / `{"method": "kaspi_qr", "qr_ref": "..."}`; без тела — `manual`, как раньше |
+| GET | `/api/payment-methods/cards` | payment_cards | мои сохранённые карты (основная первой); только клиент |
+| POST | `/api/payment-methods/cards` | payment_cards | добавить карту `{holder, number, expiry: "MM/YY", cvv, make_default}`; хранятся только holder, тип, последние 4 цифры и срок |
+| POST | `/api/payment-methods/cards/{card_id}/default` | payment_cards | сделать карту основной |
+| DELETE | `/api/payment-methods/cards/{card_id}` | payment_cards | удалить карту (если она была основной, основной станет следующая) |
+| POST | `/api/repayments/{payment_id}/kaspi-qr` | kaspi_qr_sessions | одноразовый Kaspi QR (SVG) на сумму платежа, живёт 10 минут |
 | POST | `/api/face/enroll/start` | face_enrollments | «Пройти биометрию» при регистрации: `enroll_id` + случайный порядок поворотов `steps` (вход не нужен) |
 | POST | `/api/face/enroll/finish` | face_enrollments, face_references | кадры «прямо» и поворотов (`enroll_id`, `frames_front`, `frames_right`, `frames_left`); если живой человек — одноразовый `enrollment_token` для регистрации |
 | POST | `/api/face/verify` | face_references, face_challenges | шаг 1: снимок «смотрите прямо» (form-data `file` или `image_base64`) сравнивается с биометрией клиента; при совпадении выдаётся задание `challenge_id` + порядок поворотов `steps` |
@@ -199,7 +210,22 @@ python run.py --web-only   # только сайт
 6. Logout, затем войдите как `admin` / `admin123`. Нажмите **Checks** у заявки (видно `AMOUNT_LIMIT: MANUAL_REVIEW`), потом **Approve**.
    В колонке «Reviewed by» появится имя сотрудника, а в «Issued loans» появится второй кредит.
 7. Снова войдите как клиент: заявка на 1 000 000 в статусе **Approved (Manual)**, у неё есть кредит и график.
-   Нажмите **Pay** у первого платежа, он станет **Paid**, а в столбце «Paid» будет 1 / 12.
+   Нажмите **Pay** у первого платежа: откроется окно **«Оплата платежа»** со способами оплаты (см. ниже).
+   Выберите способ и нажмите **Оплатить**: платёж станет **Paid** (рядом виден способ, например `Visa •••• 4242`),
+   а в столбце «Paid» будет 1 / 12.
+
+### Окно оплаты (ДЕМО: настоящих списаний нет)
+
+- **💳 Карта.** «+ Добавить карту»: имя держателя, номер (проверка Луна прямо в форме и на сервере), срок `ММ/ГГ`
+  (не в прошлом), CVV (3 цифры, у Amex 4). Сервер хранит **только** имя, тип карты, последние 4 цифры и срок —
+  полный номер и CVV не сохраняются нигде. Первая карта сама становится **основной**; основная карта выбрана
+  в окне заранее. У каждой карты есть «Сделать основной» и ✕ (удалить). Тестовые номера: `4242 4242 4242 4242`
+  (Visa), `5555 5555 5555 4444` (Mastercard).
+- **PayPal.** Введите e-mail, после «Оплатить» имитируется переход в PayPal и возврат.
+- **Kaspi QR.** Сервер рисует QR-код на сумму платежа (свой генератор, без CDN). Кнопка **«Я оплатил»**
+  подтверждает оплату. QR одноразовый, живёт 10 минут и подходит только к своему платежу.
+- В `logs/audit.log`: `card_added` (тип и последние 4 цифры), `card_default_set`, `card_deleted`, `kaspi_qr_created`,
+  `payment_paid ... paid_with=card|paypal|kaspi_qr|manual`.
 
 ## 6. Тестовый сценарий через Swagger (/docs)
 
@@ -288,7 +314,7 @@ grep "user=employee:1" logs/audit.log        # всё, что сделал со�
 | Что | Лимит по умолчанию | Переменная |
 |-----|--------------------|------------|
 | Вход `POST /login` и регистрация `POST /register` | 5 в минуту | `MFO_RATE_LIMIT_AUTH` |
-| Подача заявки `POST /api/applications`, загрузка документов `POST /api/clients/{id}/documents` и проверка лица `POST /api/face/verify` | 10 в минуту | `MFO_RATE_LIMIT_SUBMIT` |
+| Подача заявки `POST /api/applications`, загрузка документов `POST /api/clients/{id}/documents`, проверка лица `POST /api/face/verify`, добавление карты `POST /api/payment-methods/cards` и Kaspi QR | 10 в минуту | `MFO_RATE_LIMIT_SUBMIT` |
 | Все остальные адреса (API и страницы) | 60 в минуту | `MFO_RATE_LIMIT_DEFAULT` |
 
 - У каждого адреса свой счётчик. `/api/clients/1` и `/api/clients/2` считаются одним адресом, поэтому перебор id лимит не обходит.
@@ -323,6 +349,9 @@ MFO_RATE_LIMIT_AUTH=5/minute;50/hour
   свой счётчик. В реальной системе нужно общее хранилище (Redis). За обратным прокси (nginx) все запросы приходят
   с IP прокси и делят один лимит: нужно настроить доверенный заголовок `X-Forwarded-For`.
 - Ставка одна для всех (24% годовых), просрочки и штрафы не считаются.
+- Оплата — демо: карта, PayPal и Kaspi QR не подключены к настоящим платёжным системам. Номер карты проходит через
+  наш сервер (только для проверки и сразу забывается); в реальной системе карту вводят в форме банка/эквайера (PCI DSS),
+  а сервер получает только токен.
 - Проверка лица защищает от фото на телефоне поворотами головы, но заранее записанное видео с поворотами может пройти (см. `docs/FACE_AUTH_RU.md`).
 
 ## JWT-авторизация

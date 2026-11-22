@@ -44,6 +44,69 @@
     </div>
   </div>
 </div>
+
+<!-- Payment window: opens on "Pay". Card (saved cards, default first) / PayPal / Kaspi QR. DEMO, no money moves. -->
+<div id="pay-modal" class="modal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="pay-title" style="display:none">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="pay-title">Оплата</h5>
+        <button type="button" class="btn-close" aria-label="Закрыть" onclick="closePay()"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">Сумма: <b id="pay-amount"></b></div>
+        <div class="btn-group w-100 mb-3" role="tablist" aria-label="Способ оплаты">
+          <button type="button" class="btn btn-outline-primary" data-method="card" role="tab">💳 Карта</button>
+          <button type="button" class="btn btn-outline-primary" data-method="paypal" role="tab">PayPal</button>
+          <button type="button" class="btn btn-outline-primary" data-method="kaspi_qr" role="tab">Kaspi QR</button>
+        </div>
+
+        <!-- CARD -->
+        <div data-panel="card">
+          <div id="card-list" class="list-group mb-2"></div>
+          <button type="button" id="add-card-toggle" class="btn btn-link px-0" onclick="toggleCardForm()">+ Добавить карту</button>
+          <form id="card-form" class="border rounded p-3 d-none" autocomplete="off" novalidate>
+            <label class="form-label mb-1" for="card-holder">Держатель карты</label>
+            <input id="card-holder" class="form-control mb-2" placeholder="IVAN IVANOV" autocomplete="cc-name">
+            <label class="form-label mb-1" for="card-number">Номер карты</label>
+            <input id="card-number" class="form-control mb-2" inputmode="numeric" placeholder="0000 0000 0000 0000" autocomplete="cc-number" maxlength="23">
+            <div class="row g-2">
+              <div class="col"><label class="form-label mb-1" for="card-exp">ММ/ГГ</label>
+                <input id="card-exp" class="form-control" placeholder="08/29" inputmode="numeric" autocomplete="cc-exp" maxlength="5"></div>
+              <div class="col"><label class="form-label mb-1" for="card-cvv">CVV</label>
+                <input id="card-cvv" class="form-control" type="password" inputmode="numeric" maxlength="4" autocomplete="cc-csc"></div>
+            </div>
+            <div class="form-check mt-2"><input class="form-check-input" type="checkbox" id="card-default">
+              <label class="form-check-label" for="card-default">Сделать основной картой</label></div>
+            <small class="text-muted d-block mt-1">Сохраняются только последние 4 цифры, тип карты, срок и имя. Полный номер и CVV не хранятся.</small>
+            <button class="btn btn-primary btn-sm mt-2">Сохранить карту</button>
+          </form>
+        </div>
+
+        <!-- PAYPAL (demo) -->
+        <div data-panel="paypal" class="d-none">
+          <label class="form-label" for="paypal-email">E-mail PayPal</label>
+          <input id="paypal-email" type="email" class="form-control" placeholder="you@example.com">
+          <small class="text-muted">Демо: после «Оплатить» имитируется переход в PayPal и возврат.</small>
+        </div>
+
+        <!-- KASPI QR (demo) -->
+        <div data-panel="kaspi_qr" class="d-none text-center">
+          <div id="kaspi-qr" class="d-inline-block border rounded p-2 bg-white" style="width:220px;height:220px"></div>
+          <p class="mt-2 mb-0">Отсканируйте QR в приложении Kaspi.kz и подтвердите оплату.<br>
+            <small class="text-muted">Демо: QR одноразовый, действует 10 минут.</small></p>
+        </div>
+
+        <div id="pay-error" class="mt-3"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" onclick="closePay()">Отмена</button>
+        <button type="button" id="pay-confirm" class="btn btn-success">Оплатить</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="pay-backdrop" class="modal-backdrop fade show" style="display:none"></div>
 {% endblock %}
 
 {% block scripts %}
@@ -82,21 +145,199 @@ async function showSchedule(loanId) {
   let html = "";
   rows.forEach((p, i) => {
     const button = p.status === "Paid" ? "" :
-      `<button class="btn btn-sm btn-success" onclick="pay(${p.payment_id})">Pay</button>`;
+      `<button class="btn btn-sm btn-success" onclick="pay(${p.payment_id}, ${Number(p.amount_due)})">Pay</button>`;
+    const how = p.paid_method ? ` <small class="text-muted">${esc(p.paid_method)}</small>` : "";
     html += `<tr><td>${i + 1}</td><td>${p.due_date}</td><td>${money(p.amount_due)}</td>
-      <td><span class="badge bg-${badge(p.status)}">${p.status}</span></td><td>${button}</td></tr>`;
+      <td><span class="badge bg-${badge(p.status)}">${p.status}</span>${how}</td><td>${button}</td></tr>`;
   });
   document.getElementById("schedule").innerHTML = html;
   document.getElementById("schedule-loan").textContent = loanId;
   document.getElementById("schedule-box").classList.remove("d-none");
 }
 
-// 4) Mark one payment as Paid (simulated payment).
-async function pay(paymentId) {
-  await fetch(`/api/repayments/${paymentId}/pay`, { method: "POST" });
-  showSchedule(openLoanId);
-  loadLoans();
+// 4) "Pay" opens the payment window: choose card / PayPal / Kaspi QR, then the server marks it Paid.
+//    The default card is preselected. Everything is a DEMO (no real bank, PayPal or Kaspi call).
+const payModal = document.getElementById("pay-modal");
+const payBackdrop = document.getElementById("pay-backdrop");
+const payError = document.getElementById("pay-error");
+const payConfirm = document.getElementById("pay-confirm");
+let payState = { paymentId: null, amount: 0, method: "card", cards: [], cardId: null, qrRef: null };
+
+const payShow = (cls, html) => payError.innerHTML = html ? `<div class="alert alert-${cls} mb-0">${html}</div>` : "";
+const apiDetail = (data) => typeof data.detail === "string" ? data.detail : "Проверьте введённые данные";
+async function api(url, options = {}) {
+  const response = await fetch(url, options);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(apiDetail(data));
+  return data;
 }
+const jsonPost = (body) => ({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+async function pay(paymentId, amount) {
+  payState = { paymentId, amount, method: "card", cards: [], cardId: null, qrRef: null };
+  document.getElementById("pay-title").textContent = `Оплата платежа #${paymentId}`;
+  document.getElementById("pay-amount").textContent = money(amount);
+  document.getElementById("kaspi-qr").innerHTML = "";
+  document.getElementById("card-list").innerHTML = '<div class="spinner-border spinner-border-sm" role="status"></div>';
+  toggleCardForm(false);
+  payShow();
+  payModal.style.display = "block";
+  payBackdrop.style.display = "block";
+  await loadCards();
+  // Default card -> card tab with it selected. No cards -> card tab with the "add card" form open.
+  selectMethod("card");
+  if (!payState.cards.length) toggleCardForm(true);
+  payModal.querySelector("[data-method=card]").focus();
+}
+
+function closePay() {
+  payModal.style.display = "none";
+  payBackdrop.style.display = "none";
+}
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && payModal.style.display === "block") closePay(); });
+
+function selectMethod(method) {
+  payState.method = method;
+  payModal.querySelectorAll("[data-method]").forEach(b => {
+    b.classList.toggle("active", b.dataset.method === method);
+    b.setAttribute("aria-selected", b.dataset.method === method);
+  });
+  payModal.querySelectorAll("[data-panel]").forEach(p => p.classList.toggle("d-none", p.dataset.panel !== method));
+  payConfirm.textContent = method === "kaspi_qr" ? "Я оплатил" : "Оплатить";
+  payShow();
+  if (method === "kaspi_qr" && !payState.qrRef) showKaspiQr();
+}
+payModal.querySelectorAll("[data-method]").forEach(b => b.addEventListener("click", () => selectMethod(b.dataset.method)));
+
+// ---- cards ----
+async function loadCards() {
+  try {
+    payState.cards = await api("/api/payment-methods/cards");
+  } catch (e) {
+    payState.cards = [];
+  }
+  const current = payState.cards.find(c => c.card_id === payState.cardId);
+  const def = payState.cards.find(c => c.is_default);
+  payState.cardId = (current || def || payState.cards[0] || {}).card_id ?? null;
+  drawCards();
+}
+
+function drawCards() {
+  const list = document.getElementById("card-list");
+  list.innerHTML = payState.cards.map(c => `
+    <label class="list-group-item d-flex align-items-center gap-2">
+      <input class="form-check-input m-0" type="radio" name="pay-card" value="${c.card_id}" ${c.card_id === payState.cardId ? "checked" : ""}
+             onchange="payState.cardId = ${c.card_id}">
+      <span class="flex-grow-1"><b>${esc(c.title)}</b> <small class="text-muted">${esc(c.expiry)} · ${esc(c.holder)}</small>
+        ${c.is_default ? '<span class="badge bg-primary ms-1">основная</span>' : ""}</span>
+      ${c.is_default ? "" : `<button type="button" class="btn btn-sm btn-outline-secondary" onclick="setDefaultCard(${c.card_id})">Сделать основной</button>`}
+      <button type="button" class="btn btn-sm btn-outline-danger" aria-label="Удалить карту" onclick="deleteCard(${c.card_id})">✕</button>
+    </label>`).join("") || '<div class="text-muted small">Нет сохранённых карт</div>';
+}
+
+async function setDefaultCard(cardId) {
+  payState.cards = await api(`/api/payment-methods/cards/${cardId}/default`, { method: "POST" });
+  payState.cardId = cardId;
+  drawCards();
+}
+
+async function deleteCard(cardId) {
+  if (!confirm("Удалить эту карту?")) return;
+  await api(`/api/payment-methods/cards/${cardId}`, { method: "DELETE" });
+  await loadCards();
+}
+
+function toggleCardForm(open) {
+  const form = document.getElementById("card-form");
+  form.classList.toggle("d-none", open === undefined ? !form.classList.contains("d-none") : !open);
+}
+
+// Luhn on the page too (the server checks again): faster feedback for a typo.
+function luhn(number) {
+  let sum = 0;
+  [...number].reverse().forEach((ch, i) => { let d = +ch; if (i % 2) { d *= 2; if (d > 9) d -= 9; } sum += d; });
+  return number.length >= 12 && sum % 10 === 0;
+}
+document.getElementById("card-number").addEventListener("input", (e) => {
+  const digits = e.target.value.replace(/\D/g, "").slice(0, 19);
+  e.target.value = digits.replace(/(.{4})/g, "$1 ").trim();
+  e.target.classList.toggle("is-invalid", digits.length >= 12 && !luhn(digits));
+});
+document.getElementById("card-exp").addEventListener("input", (e) => {
+  const d = e.target.value.replace(/\D/g, "").slice(0, 4);
+  e.target.value = d.length > 2 ? d.slice(0, 2) + "/" + d.slice(2) : d;
+});
+document.getElementById("card-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const number = document.getElementById("card-number").value.replace(/\D/g, "");
+  if (!luhn(number)) return payShow("warning", "Неверный номер карты");
+  try {
+    const saved = await api("/api/payment-methods/cards", jsonPost({
+      holder: document.getElementById("card-holder").value,
+      number,
+      expiry: document.getElementById("card-exp").value,
+      cvv: document.getElementById("card-cvv").value,
+      make_default: document.getElementById("card-default").checked,
+    }));
+    event.target.reset();
+    toggleCardForm(false);
+    payState.cardId = saved.card_id;
+    await loadCards();
+    payShow("success", `Карта ${esc(saved.title)} сохранена`);
+  } catch (e) {
+    payShow("danger", esc(e.message));
+  } finally {
+    document.getElementById("card-cvv").value = "";   // the CVV never stays on the page
+  }
+});
+
+// ---- Kaspi QR ----
+async function showKaspiQr() {
+  const box = document.getElementById("kaspi-qr");
+  box.innerHTML = '<div class="spinner-border mt-5" role="status"></div>';
+  try {
+    const data = await api(`/api/repayments/${payState.paymentId}/kaspi-qr`, { method: "POST" });
+    payState.qrRef = data.qr_ref;
+    box.innerHTML = data.svg;                         // SVG generated by our server (payments/qr.py)
+    const svg = box.querySelector("svg");
+    svg.setAttribute("width", "100%"); svg.setAttribute("height", "100%");
+  } catch (e) {
+    box.innerHTML = "";
+    payShow("danger", esc(e.message));
+  }
+}
+
+// ---- pay ----
+payConfirm.addEventListener("click", async () => {
+  const body = { method: payState.method };
+  if (payState.method === "card") {
+    if (!payState.cardId) return payShow("warning", "Добавьте карту или выберите другой способ");
+    body.card_id = payState.cardId;
+  } else if (payState.method === "paypal") {
+    body.paypal_email = document.getElementById("paypal-email").value.trim();
+    if (!/^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$/.test(body.paypal_email)) return payShow("warning", "Введите e-mail PayPal");
+  } else {
+    if (!payState.qrRef) return payShow("warning", "QR ещё не готов");
+    body.qr_ref = payState.qrRef;
+  }
+  payConfirm.disabled = true;
+  try {
+    if (payState.method === "paypal") {
+      payShow("info", '<span class="spinner-border spinner-border-sm"></span> Переход в PayPal... (демо)');
+      await new Promise(ok => setTimeout(ok, 1200));
+    }
+    const result = await api(`/api/repayments/${payState.paymentId}/pay`, jsonPost(body));
+    payShow("success", `Оплачено ✔ ${esc(result.paid_method)}`);
+    setTimeout(closePay, 900);
+    showSchedule(openLoanId);
+    loadLoans();
+  } catch (e) {
+    payShow("danger", esc(e.message));
+    if (payState.method === "kaspi_qr") payState.qrRef = null;   // a used/expired QR -> a new one next time
+  } finally {
+    payConfirm.disabled = false;
+  }
+});
 
 // 5) Save the application and go to the face check first.
 // face.html sends it after a successful match (the server refuses it without a face_token anyway).
