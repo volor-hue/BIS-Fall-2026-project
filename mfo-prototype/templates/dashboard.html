@@ -45,6 +45,11 @@
   </div>
 </div>
 
+<style>
+  .brand-logo { display: inline-block; vertical-align: middle; }
+  .pay-tab { display: flex; align-items: center; justify-content: center; gap: 6px; }
+  .pay-tab.active .brand-logo { filter: drop-shadow(0 0 1px #fff); }
+</style>
 <!-- Payment window: opens on "Pay". Card (saved cards, default first) / PayPal / Kaspi QR. DEMO, no money moves. -->
 <div id="pay-modal" class="modal" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="pay-title" style="display:none">
   <div class="modal-dialog modal-dialog-centered">
@@ -56,9 +61,9 @@
       <div class="modal-body">
         <div class="mb-3">Сумма: <b id="pay-amount"></b></div>
         <div class="btn-group w-100 mb-3" role="tablist" aria-label="Способ оплаты">
-          <button type="button" class="btn btn-outline-primary" data-method="card" role="tab">💳 Карта</button>
-          <button type="button" class="btn btn-outline-primary" data-method="paypal" role="tab">PayPal</button>
-          <button type="button" class="btn btn-outline-primary" data-method="kaspi_qr" role="tab">Kaspi QR</button>
+          <button type="button" class="btn btn-outline-primary pay-tab" data-method="card" role="tab"><span data-logo="cards"></span> Карта</button>
+          <button type="button" class="btn btn-outline-primary pay-tab" data-method="paypal" role="tab"><span data-logo="PayPal"></span><span class="visually-hidden">PayPal</span></button>
+          <button type="button" class="btn btn-outline-primary pay-tab" data-method="kaspi_qr" role="tab"><span data-logo="Kaspi"></span> QR</button>
         </div>
 
         <!-- CARD -->
@@ -69,7 +74,10 @@
             <label class="form-label mb-1" for="card-holder">Держатель карты</label>
             <input id="card-holder" class="form-control mb-2" placeholder="IVAN IVANOV" autocomplete="cc-name">
             <label class="form-label mb-1" for="card-number">Номер карты</label>
-            <input id="card-number" class="form-control mb-2" inputmode="numeric" placeholder="0000 0000 0000 0000" autocomplete="cc-number" maxlength="23">
+            <div class="input-group mb-2">
+              <input id="card-number" class="form-control" inputmode="numeric" placeholder="0000 0000 0000 0000" autocomplete="cc-number" maxlength="23" aria-describedby="card-brand">
+              <span class="input-group-text bg-white" id="card-brand" style="min-width:64px;justify-content:center" aria-live="polite"></span>
+            </div>
             <div class="row g-2">
               <div class="col"><label class="form-label mb-1" for="card-exp">ММ/ГГ</label>
                 <input id="card-exp" class="form-control" placeholder="08/29" inputmode="numeric" autocomplete="cc-exp" maxlength="5"></div>
@@ -146,7 +154,7 @@ async function showSchedule(loanId) {
   rows.forEach((p, i) => {
     const button = p.status === "Paid" ? "" :
       `<button class="btn btn-sm btn-success" onclick="pay(${p.payment_id}, ${Number(p.amount_due)})">Pay</button>`;
-    const how = p.paid_method ? ` <small class="text-muted">${esc(p.paid_method)}</small>` : "";
+    const how = p.paid_method ? ` ${logo(logoForPaid(p.paid_method), 16)} <small class="text-muted">${esc(p.paid_method)}</small>` : "";
     html += `<tr><td>${i + 1}</td><td>${p.due_date}</td><td>${money(p.amount_due)}</td>
       <td><span class="badge bg-${badge(p.status)}">${p.status}</span>${how}</td><td>${button}</td></tr>`;
   });
@@ -154,6 +162,49 @@ async function showSchedule(loanId) {
   document.getElementById("schedule-loan").textContent = loanId;
   document.getElementById("schedule-box").classList.remove("d-none");
 }
+
+// ---- brand logos: simplified marks in official colours, inline SVG (no CDN, no image files) ----
+const LOGO_SVG = {
+  Visa: '<svg viewBox="0 0 48 30"><rect width="48" height="30" rx="4" fill="#fff" stroke="#d9d9d9"/><text x="24" y="20.5" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="14" font-weight="900" font-style="italic" fill="#1A1F71">VISA</text></svg>',
+  Mastercard: '<svg viewBox="0 0 48 30"><rect width="48" height="30" rx="4" fill="#fff" stroke="#d9d9d9"/><circle cx="19" cy="15" r="9" fill="#EB001B"/><circle cx="29" cy="15" r="9" fill="#F79E1B"/><path d="M24 7.5a9 9 0 0 1 0 15a9 9 0 0 1 0-15z" fill="#FF5F00"/></svg>',
+  Amex: '<svg viewBox="0 0 48 30"><rect width="48" height="30" rx="4" fill="#2E77BC"/><text x="24" y="19.5" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="11" font-weight="900" fill="#fff" letter-spacing=".5">AMEX</text></svg>',
+  Mir: '<svg viewBox="0 0 48 30"><defs><linearGradient id="mirg" x1="0" x2="1"><stop offset="0" stop-color="#00B4E6"/><stop offset="1" stop-color="#0066B3"/></linearGradient></defs><rect width="48" height="30" rx="4" fill="#fff" stroke="#d9d9d9"/><text x="21" y="20" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="12.5" font-weight="900" fill="#0F754E">МИР</text><rect x="35" y="11" width="8" height="5" rx="1.5" fill="url(#mirg)"/></svg>',
+  UnionPay: '<svg viewBox="0 0 48 30"><rect width="48" height="30" rx="4" fill="#fff" stroke="#d9d9d9"/><path d="M9 5h11l-4 20H5z" fill="#E21836"/><path d="M19 5h11l-4 20H15z" fill="#00447C"/><path d="M29 5h12l-4 20H25z" fill="#007B84"/><text x="24" y="18.5" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-size="6.5" font-weight="700" fill="#fff">UnionPay</text></svg>',
+  Card: '<svg viewBox="0 0 48 30"><rect width="48" height="30" rx="4" fill="#6c757d"/><rect y="7" width="48" height="5" fill="#343a40"/><rect x="6" y="18" width="14" height="4" rx="1" fill="#dee2e6"/></svg>',
+  PayPal: '<svg viewBox="0 0 80 30"><path d="M9 4h8.5c4.5 0 6.6 2.4 5.9 6.1c-.8 4.3-3.8 6.4-8 6.4h-2.6L11.6 24H6.2z" fill="#003087"/><path d="M12.5 8h7.5c4 0 6 2.2 5.3 5.6c-.8 4-3.5 5.9-7.3 5.9h-2.3L14.4 26H9.6z" fill="#009CDE" opacity=".9"/><text x="29" y="20" font-family="Verdana,Arial,sans-serif" font-size="12.5" font-weight="700" font-style="italic"><tspan fill="#003087">Pay</tspan><tspan fill="#009CDE">Pal</tspan></text></svg>',
+  Kaspi: '<svg viewBox="0 0 70 30"><rect x="1" y="1" width="28" height="28" rx="7" fill="#F14635"/><path d="M10 7v16M10 15.5l8-8.5M12.5 13l6.5 10" stroke="#fff" stroke-width="3.2" stroke-linecap="round" fill="none"/><text x="32" y="20" font-family="Arial,Helvetica,sans-serif" font-size="12" font-weight="700" fill="#F14635">kaspi</text></svg>',
+  Manual: '<svg viewBox="0 0 30 30"><rect x="2" y="7" width="26" height="16" rx="3" fill="#198754"/><circle cx="15" cy="15" r="4.5" fill="none" stroke="#fff" stroke-width="2"/></svg>',
+};
+const LOGO_WIDTH = { PayPal: 80, Kaspi: 70, Manual: 30 };
+function logo(kind, height = 20) {
+  if (kind === "cards") return logo("Visa", height) + logo("Mastercard", height);
+  const svg = LOGO_SVG[kind] || LOGO_SVG.Card;
+  const width = Math.round((LOGO_WIDTH[kind] || 48) * height / 30);
+  return `<span class="brand-logo" role="img" aria-label="${esc(kind)}" style="width:${width}px;height:${height}px">`
+    + svg.replace("<svg ", `<svg width="${width}" height="${height}" `) + "</span>";
+}
+// Same IIN ranges as payments/cards.py brand_of(): live logo while the card number is typed.
+function brandOf(digits) {
+  if (!digits) return null;
+  if (digits.startsWith("4")) return "Visa";
+  const two = +digits.slice(0, 2), four = +digits.slice(0, 4);
+  if (digits.length >= 2 && (two === 34 || two === 37)) return "Amex";
+  if (digits.length >= 4 && four >= 2200 && four <= 2204) return "Mir";
+  if (digits.length >= 2 && two >= 51 && two <= 55) return "Mastercard";
+  if (digits.length >= 4 && four >= 2221 && four <= 2720) return "Mastercard";
+  if (digits.startsWith("62")) return "UnionPay";
+  return digits.length >= 4 ? "Card" : null;
+}
+// "Visa •••• 4242" / "PayPal a***@x" / "Kaspi QR" / "Manual ..." -> logo name.
+function logoForPaid(text) {
+  const t = String(text || "");
+  if (t.startsWith("PayPal")) return "PayPal";
+  if (t.startsWith("Kaspi")) return "Kaspi";
+  if (t.startsWith("Manual")) return "Manual";
+  const brand = t.split(" ")[0];
+  return LOGO_SVG[brand] ? brand : "Card";
+}
+document.querySelectorAll("[data-logo]").forEach(el => el.innerHTML = logo(el.dataset.logo, 24));
 
 // 4) "Pay" opens the payment window: choose card / PayPal / Kaspi QR, then the server marks it Paid.
 //    The default card is preselected. Everything is a DEMO (no real bank, PayPal or Kaspi call).
@@ -228,6 +279,7 @@ function drawCards() {
     <label class="list-group-item d-flex align-items-center gap-2">
       <input class="form-check-input m-0" type="radio" name="pay-card" value="${c.card_id}" ${c.card_id === payState.cardId ? "checked" : ""}
              onchange="payState.cardId = ${c.card_id}">
+      ${logo(c.brand, 24)}
       <span class="flex-grow-1"><b>${esc(c.title)}</b> <small class="text-muted">${esc(c.expiry)} · ${esc(c.holder)}</small>
         ${c.is_default ? '<span class="badge bg-primary ms-1">основная</span>' : ""}</span>
       ${c.is_default ? "" : `<button type="button" class="btn btn-sm btn-outline-secondary" onclick="setDefaultCard(${c.card_id})">Сделать основной</button>`}
@@ -261,6 +313,8 @@ function luhn(number) {
 document.getElementById("card-number").addEventListener("input", (e) => {
   const digits = e.target.value.replace(/\D/g, "").slice(0, 19);
   e.target.value = digits.replace(/(.{4})/g, "$1 ").trim();
+  const brand = brandOf(digits);
+  document.getElementById("card-brand").innerHTML = brand ? logo(brand, 22) : "";
   e.target.classList.toggle("is-invalid", digits.length >= 12 && !luhn(digits));
 });
 document.getElementById("card-exp").addEventListener("input", (e) => {
@@ -280,6 +334,7 @@ document.getElementById("card-form").addEventListener("submit", async (event) =>
       make_default: document.getElementById("card-default").checked,
     }));
     event.target.reset();
+    document.getElementById("card-brand").innerHTML = "";
     toggleCardForm(false);
     payState.cardId = saved.card_id;
     await loadCards();
@@ -327,7 +382,7 @@ payConfirm.addEventListener("click", async () => {
       await new Promise(ok => setTimeout(ok, 1200));
     }
     const result = await api(`/api/repayments/${payState.paymentId}/pay`, jsonPost(body));
-    payShow("success", `Оплачено ✔ ${esc(result.paid_method)}`);
+    payShow("success", `Оплачено ✔ ${logo(logoForPaid(result.paid_method), 18)} ${esc(result.paid_method)}`);
     setTimeout(closePay, 900);
     showSchedule(openLoanId);
     loadLoans();

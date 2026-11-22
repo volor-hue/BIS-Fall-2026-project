@@ -182,3 +182,4 @@ def test_pay_without_method_still_works_and_unknown_method_is_refused(carol, sta
 def test_dashboard_has_the_payment_window(carol):
     page = carol.get("/dashboard").text
     assert 'id="pay-modal"' in page and "Kaspi QR" in page and "PayPal" in page
+    assert "LOGO_SVG" in page and "#EB001B" in page and "#F14635" in page   # inline brand logos, no CDN/images
