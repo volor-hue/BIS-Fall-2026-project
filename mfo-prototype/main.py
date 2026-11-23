@@ -27,6 +27,7 @@ import database
 import face_auth
 import payments
 import rate_limit
+import repayment_rules.router
 from approval import INTEREST_RATE, build_schedule, decide_application, run_checks
 from log_config import audit, clean, log, mask_login, setup_logging
 from rate_limit import AUTH_LIMIT, SUBMIT_LIMIT, limiter
@@ -575,7 +576,8 @@ def api_list_repayments(loan_id: int, user: dict = Depends(require_user)):
     methods = payments.storage.methods_for_loan(loan_id)
     for row in rows:
         row["paid_method"] = methods.get(row["payment_id"])
-    return rows
+    # Added fields: Overdue status, days of delay, penalty, total to pay, closed early (repayment_rules/).
+    return repayment_rules.router.enrich(loan_id, rows)
 
 
 @app.post("/api/repayments/{payment_id}/pay", tags=["repayments"])
@@ -590,14 +592,20 @@ def api_pay(payment_id: int, request: Request, body: Optional[payments.PayIn] = 
     ensure_own_client(user, client_id)
     if payment["status"] == "Paid":
         raise HTTPException(400, "This payment is already paid")
+    # An overdue repayment is paid together with its penalty (repayment_rules/rules.py, BR-1..BR-3).
+    charge = repayment_rules.rules.charge(payment)
     method, method_detail = payments.choose_method(user, client_id, payment_id, body)
     database.mark_repayment_paid(payment_id)
+    if charge["penalty"] > 0:
+        repayment_rules.storage.record_penalty(payment_id, charge["days_overdue"], charge["penalty"])
     payments.storage.record_transaction(payment_id, client_id, method, method_detail,
-                                        payment["amount_due"], user["role"])
+                                        charge["total_to_pay"], user["role"])
     audit("payment_paid", request, payment_id=payment_id, loan_id=payment["loan_id"],
-          amount=payment["amount_due"], paid_with=method)
+          amount=charge["total_to_pay"], penalty=charge["penalty"], paid_with=method)
     result = database.get_repayment(payment_id)
     result["paid_method"] = method_detail
+    result.update(days_overdue=charge["days_overdue"], penalty=charge["penalty"],
+                  total_paid=charge["total_to_pay"])
     return result
 
 
@@ -610,6 +618,11 @@ app.include_router(face_auth.create_router(authenticate=authenticate, current_cl
 # ---------- payment methods (cards, PayPal, Kaspi QR) ----------
 # /api/payment-methods/cards... and /api/repayments/{id}/kaspi-qr live in payments/router.py.
 app.include_router(payments.create_router(require_user=require_user, ensure_own_client=ensure_own_client))
+
+# ---------- repayment rules (overdue, penalty, early payoff) ----------
+# /api/loans/{id}/early-payoff lives in repayment_rules/router.py.
+app.include_router(repayment_rules.router.create_router(require_user=require_user,
+                                                        ensure_own_client=ensure_own_client))
 
 
 # ============================================================
