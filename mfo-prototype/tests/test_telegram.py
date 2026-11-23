@@ -740,8 +740,10 @@ def test_openapi_stays_30_operations_without_telegram(client):
         ("post", "/api/payment-methods/cards/{card_id}/default"),
         ("delete", "/api/payment-methods/cards/{card_id}"),
         ("post", "/api/repayments/{payment_id}/kaspi-qr"),
+        ("get", "/api/loans/{loan_id}/early-payoff"),
+        ("post", "/api/loans/{loan_id}/early-payoff"),
     }
-    assert len(operations) == 30
+    assert len(operations) == 32
     blob = str(spec).lower()
     assert "telegram" not in blob and "pairing" not in blob
     assert client.get("/docs").status_code == 200

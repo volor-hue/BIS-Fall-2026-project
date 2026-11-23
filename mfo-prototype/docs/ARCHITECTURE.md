@@ -14,7 +14,7 @@ flowchart TB
   end
   DEPS["app/api/deps.py<br/>кто вызывает и что ему можно"]
   SRV["app/services/<br/>бизнес-логика"]
-  FEAT["app/face_auth/ · app/payments/<br/>модули-функции со своим router/service/storage"]
+  FEAT["app/face_auth/ · app/payments/ · app/repayment_rules/<br/>модули-функции со своим router/service/storage"]
   DB["app/db/database.py<br/>все SQL-запросы"]
   CORE["app/core/<br/>config · security · logs · rate_limit"]
 
@@ -39,13 +39,14 @@ flowchart TB
 | Бизнес-логика | `app/services/` | правила одобрения, выдача кредита, график, регистрация, оплата | ничего не знает про HTTP: бросает `NotFoundError` / `RuleError`, их переводит в ответ `app/main.py` |
 | База данных | `app/db/database.py` | все SQL-запросы с параметрами `?` | не принимает решений |
 | Ядро | `app/core/` | настройки, пароли и JWT, логи, лимиты запросов | не зависит ни от одного слоя выше |
-| Модули-функции | `app/face_auth/`, `app/payments/` | вертикальные «срезы» со своими router/service/storage | — |
+| Модули-функции | `app/face_auth/`, `app/payments/`, `app/repayment_rules/` | вертикальные «срезы» со своими router/service/storage | — |
 | Бот | `bot/` | Telegram-бот и команды оператора | не импортирует веб-код, общая только база и настройки |
 
 **Правило:** импорты идут только сверху вниз.
 - `app/core` не импортирует ничего из остального проекта.
-- `app/services` и `app/db` не импортируют `app/api` и `app/web`. Поэтому `app/face_auth/__init__.py` и
-  `app/payments/__init__.py` не подгружают свои роутеры: роутеры подключает только `app/main.py`.
+- `app/services` и `app/db` не импортируют `app/api` и `app/web`. Поэтому `__init__.py` пакетов
+  `app/face_auth/`, `app/payments/` и `app/repayment_rules/` не подгружают свои роутеры: роутеры подключает
+  только `app/main.py`. Это проверяет `tests/test_architecture.py`.
 - Веб-приложение (`app/`) не импортирует бота (`bot/`): это проверяет тест в `tests/test_telegram.py`.
 - Исключение, которое стоит знать: `app/face_auth/gate.py` и `app/payments/service.py` бросают
   `HTTPException` прямо из своих проверок (так было до разделения на слои, поведение сохранено).

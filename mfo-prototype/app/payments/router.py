@@ -22,6 +22,7 @@ from app.core.logs import audit
 from app.core.rate_limit import SUBMIT_LIMIT, limiter
 from app.db import database
 from app.payments import cards, qr, service, storage
+from app.repayment_rules.rules import total_to_pay
 
 
 class CardIn(BaseModel):
@@ -92,7 +93,7 @@ def create_router():
             raise HTTPException(403, "Kaspi QR is only for the client who owns the loan")
         if payment["status"] == "Paid":
             raise HTTPException(400, "This payment is already paid")
-        amount = float(payment["amount_due"])
+        amount = total_to_pay(payment)        # amount_due + penalty if overdue (repayment_rules)
         ref = storage.create_qr_session(payment_id, client_id, amount, service.QR_MINUTES)
         text = service.kaspi_qr_text(payment_id, amount, ref)
         audit("kaspi_qr_created", request, client_id=client_id, payment_id=payment_id, amount=amount)

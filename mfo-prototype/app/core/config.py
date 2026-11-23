@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import secrets
+from datetime import date
 
 from limits import parse_many
 
@@ -322,6 +323,23 @@ def telegram_code_ttl_seconds():
 
 
 # ============================================================
+# Repayment rules (app/repayment_rules/)
+#   MFO_TODAY=YYYY-MM-DD   moves the "current date" forward for the defense demo (overdue, penalty).
+#                          Empty = the real date. Read at the moment of use.
+# ============================================================
+
+def demo_today():
+    """The date from MFO_TODAY, or None (= use the real date). A wrong value is ignored."""
+    value = get("MFO_TODAY")
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+# ============================================================
 # Check at start
 # ============================================================
 
@@ -335,6 +353,8 @@ def check_settings():
         problems.append("MFO_HOST is invalid, example: 127.0.0.1")
     if parse_port(get("MFO_PORT")) is None:
         problems.append("MFO_PORT must be a number from 1 to 65535")
+    if get("MFO_TODAY") and demo_today() is None:
+        problems.append("MFO_TODAY must be a date YYYY-MM-DD, using the real date")
     return problems
 
 

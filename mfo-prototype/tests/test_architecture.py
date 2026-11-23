@@ -10,7 +10,8 @@ import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-UPPER = ("app.api", "app.web", "app.main", "app.face_auth.router", "app.payments.router")
+UPPER = ("app.api", "app.web", "app.main", "app.face_auth.router", "app.payments.router",
+         "app.repayment_rules.router")
 
 
 def loaded_modules(module, tmp_path):
@@ -35,7 +36,8 @@ def test_core_depends_only_on_core(module, tmp_path):
 
 
 @pytest.mark.parametrize("module", ["app.db.database", "app.services.loans", "app.services.clients",
-                                    "app.services.documents", "app.services.auth"])
+                                    "app.services.documents", "app.services.auth",
+                                    "app.services.analytics", "app.repayment_rules"])
 def test_lower_layers_do_not_import_api_or_pages(module, tmp_path):
     upper = [m for m in loaded_modules(module, tmp_path) if m.startswith(UPPER)]
     assert upper == [], upper

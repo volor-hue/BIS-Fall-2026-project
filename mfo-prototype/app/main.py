@@ -10,6 +10,7 @@
 #   app/core/       settings, security (JWT, passwords), logging, rate limits
 #   app/face_auth/  webcam face check (its own router, service and storage)
 #   app/payments/   payment methods: cards, PayPal, Kaspi QR (demo)
+#   app/repayment_rules/  overdue, penalty, early payoff
 #
 # Run it with:   python run.py --web-only    (or: uvicorn app.main:app --reload --port 8001)
 # Pages:         http://127.0.0.1:8001
@@ -31,6 +32,7 @@ from app.core.rate_limit import limiter
 from app.db import database
 from app.face_auth.router import router as face_router
 from app.payments.router import router as payments_router
+from app.repayment_rules.router import router as repayment_rules_router
 from app.services.errors import ServiceError
 from app.web import pages
 from app.web.templates import templates
@@ -136,4 +138,5 @@ add_routes(applications.router)    # /api/applications/*
 add_routes(loans.router)           # /api/loans/*, /api/repayments/{id}/pay
 add_routes(face_router)            # /api/face/*, /face        (app/face_auth/router.py)
 add_routes(payments_router)        # /api/payment-methods/*, Kaspi QR (app/payments/router.py)
+add_routes(repayment_rules_router)  # /api/loans/{id}/early-payoff (app/repayment_rules/router.py)
 add_routes(pages.router)           # HTML pages

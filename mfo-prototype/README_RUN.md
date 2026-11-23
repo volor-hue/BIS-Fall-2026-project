@@ -41,6 +41,7 @@ mfo-prototype/
 │   │   ├── clients.py      # регистрация (+ биометрия), работа, удаление клиента
 │   │   ├── documents.py    # сохранение загруженных документов
 │   │   ├── auth.py         # проверка логина и пароля
+│   │   ├── analytics.py    # отчёт по портфелю (только чтение):  python -m app.services.analytics
 │   │   └── errors.py       # ошибки бизнес-правил (404/400), их переводит в ответ app/main.py
 │   ├── db/
 │   │   └── database.py     # слой базы данных: ВСЕ SQL-запросы, 8 таблиц по ERD + Telegram
@@ -57,6 +58,11 @@ mfo-prototype/
 │   │   ├── storage.py      # таблицы face_enrollments, face_references, face_challenges, face_tokens
 │   │   ├── gate.py         # без face_token заявку не принять (403), без биометрии не зарегистрироваться
 │   │   └── router.py       # /api/face/enroll/*, /api/face/verify, /api/face/liveness, страница /face
+│   ├── repayment_rules/    # ЧТО и КОГДА платить: просрочка, штраф, досрочное погашение (docs/REPAYMENT_RULES.md)
+│   │   ├── rules.py        # чистые правила BR-1..BR-5
+│   │   ├── service.py      # поля графика: Overdue, дни просрочки, штраф, сумма к оплате
+│   │   ├── storage.py      # таблицы repayment_penalties, early_payoffs, early_payoff_items
+│   │   └── router.py       # GET/POST /api/loans/{id}/early-payoff
 │   └── payments/           # способы оплаты платежа (ДЕМО, деньги не списываются)
 │       ├── cards.py        # проверка карты: Луна, тип (Visa/Mastercard/Mir...), срок ММ/ГГ, CVV
 │       ├── storage.py      # таблицы payment_cards, kaspi_qr_sessions, payment_transactions
@@ -76,6 +82,8 @@ mfo-prototype/
 ├── docs/
 │   ├── ARCHITECTURE.md     # слои, правила зависимостей, путь запроса
 │   ├── ERD.md              # ER-диаграмма (mermaid) и таблица связей
+│   ├── REPAYMENT_RULES.md  # правила погашения: просрочка, штраф, досрочное погашение
+│   ├── TEST_PLAN.md        # план тестирования
 │   └── FACE_AUTH_RU.md     # как работает проверка лица (для защиты)
 ├── tests/
 │   ├── conftest.py         # общая настройка тестов (временная БД и папка логов)

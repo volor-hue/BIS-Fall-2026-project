@@ -53,7 +53,7 @@ def api_pay(payment_id: int, request: Request, body: Optional[payments.PayIn] = 
         raise HTTPException(404, "Payment not found")
     client_id = database.get_loan(payment["loan_id"])["client_id"]
     ensure_own_client(user, client_id)
-    result, method = loans.pay(payment, client_id, user, body)
+    result, method, charge = loans.pay(payment, client_id, user, body)
     audit("payment_paid", request, payment_id=payment_id, loan_id=payment["loan_id"],
-          amount=payment["amount_due"], paid_with=method)
+          amount=charge["total_to_pay"], penalty=charge["penalty"], paid_with=method)
     return result

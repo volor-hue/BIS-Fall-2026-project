@@ -6,7 +6,7 @@
 # ------------------------------------------------------------
 from datetime import date, datetime
 
-from app import payments
+from app import payments, repayment_rules
 from app.core.logs import audit
 from app.db import database
 from app.services.approval import INTEREST_RATE, build_schedule, decide_application, run_checks
@@ -79,19 +79,26 @@ def repayments_with_methods(loan_id):
     methods = payments.storage.methods_for_loan(loan_id)
     for row in rows:
         row["paid_method"] = methods.get(row["payment_id"])
-    return rows
+    # Added fields: Overdue status, days of delay, penalty, total to pay, closed early (app/repayment_rules/).
+    return repayment_rules.service.enrich(loan_id, rows)
 
 
 def pay(payment, client_id, user, body):
     """Mark one repayment Paid. `body` = optional payment window choice (card / PayPal / Kaspi QR).
-    Returns the repayment and the method, e.g. ("card", "Visa •••• 4242")."""
+    An overdue repayment is paid together with its penalty (app/repayment_rules/rules.py, BR-1..BR-3).
+    Returns (repayment, method, charge), e.g. method "card", charge {"penalty": ..., "total_to_pay": ...}."""
     if payment["status"] == "Paid":
         raise RuleError("This payment is already paid")
     payment_id = payment["payment_id"]
+    charge = repayment_rules.rules.charge(payment)
     method, method_detail = payments.choose_method(user, client_id, payment_id, body)
     database.mark_repayment_paid(payment_id)
+    if charge["penalty"] > 0:
+        repayment_rules.storage.record_penalty(payment_id, charge["days_overdue"], charge["penalty"])
     payments.storage.record_transaction(payment_id, client_id, method, method_detail,
-                                        payment["amount_due"], user["role"])
+                                        charge["total_to_pay"], user["role"])
     result = database.get_repayment(payment_id)
     result["paid_method"] = method_detail
-    return result, method
+    result.update(days_overdue=charge["days_overdue"], penalty=charge["penalty"],
+                  total_paid=charge["total_to_pay"])
+    return result, method, charge
