@@ -18,13 +18,14 @@ import threading
 import time
 from dataclasses import dataclass
 
-import telegram_bot
-import telegram_env
-import telegram_staff
+from app.core import config
+from app.core.config import DEFAULT_HOST, DEFAULT_PORT, parse_host, parse_port
+from bot import main as telegram_bot
+from bot import staff as telegram_staff
 
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8001
 _STOP = threading.Event()
+# Windows has no SIGKILL: there "kill" means proc.kill() (see _signal_tree).
+FORCE_KILL = getattr(signal, "SIGKILL", None)
 
 
 @dataclass(frozen=True)
@@ -54,7 +55,7 @@ def load_project_env(directory):
     """Read only <project>/.env. The process environment wins. cwd is ignored."""
     path = os.path.join(directory, ".env")
     if os.path.isfile(path):
-        telegram_env._apply_env_file(path)
+        config.apply_env_file(path)
 
 
 def resolve_db_path(directory):
@@ -72,29 +73,6 @@ def apply_runtime_env(directory):
     if parent:
         os.makedirs(parent, exist_ok=True)
     return db_path
-
-
-def parse_port(raw):
-    if raw is None or str(raw).strip() == "":
-        return DEFAULT_PORT
-    text = str(raw).strip()
-    if not text.isdigit():
-        return None
-    value = int(text)
-    if value < 1 or value > 65535:
-        return None
-    return value
-
-
-def parse_host(raw):
-    if raw is None or str(raw).strip() == "":
-        return DEFAULT_HOST
-    host = str(raw).strip()
-    if len(host) > 253 or any(char.isspace() for char in host):
-        return None
-    if "/" in host or "\\" in host or ":" in host:
-        return None
-    return host
 
 
 def port_is_free(host, port):
@@ -122,13 +100,11 @@ def child_commands(plan):
     commands = []
     if plan.start_web:
         commands.append([
-            sys.executable, "-m", "uvicorn", "main:app",
+            sys.executable, "-m", "uvicorn", "app.main:app",
             "--host", plan.host, "--port", str(plan.port),
         ])
     if plan.start_bot:
-        commands.append([
-            sys.executable, os.path.join(plan.project_dir, "telegram_bot.py"),
-        ])
+        commands.append([sys.executable, "-m", "bot"])
     return commands
 
 
@@ -244,11 +220,13 @@ def _signal_tree(proc, sig):
     if proc.poll() is not None:
         return
     if os.name == "nt":
-        if sig == signal.SIGKILL:
+        if sig == FORCE_KILL:
             proc.kill()
         else:
             proc.terminate()
         return
+    if sig is None:
+        sig = signal.SIGTERM
     try:
         os.killpg(proc.pid, sig)
     except (ProcessLookupError, PermissionError, OSError):
@@ -267,7 +245,7 @@ def stop_processes(procs, grace=2.0):
         try:
             proc.wait(timeout=max(0.1, remaining))
         except subprocess.TimeoutExpired:
-            _signal_tree(proc, signal.SIGKILL)
+            _signal_tree(proc, FORCE_KILL)
             try:
                 proc.wait(timeout=2)
             except subprocess.TimeoutExpired:
@@ -302,7 +280,7 @@ def prefetch_face_models():
     so the first webcam check does not wait for the download. Errors only print a hint."""
     def work():
         try:
-            from face_auth import engine
+            from app.face_auth import engine
             engine.ensure_models()
         except Exception as error:  # no internet / no OpenCV: the site still works
             print(f"Модели для проверки лица не скачаны ({type(error).__name__}). "
@@ -326,6 +304,9 @@ def main(argv=None):
                 return 3
             return 2
         print(format_banner(plan))
+        # Settings that were wrong and replaced by defaults (JWT secret, limits, face thresholds...).
+        for problem in config.check_settings():
+            print("Предупреждение в настройках: " + problem, file=sys.stderr)
         if plan.start_web:
             prefetch_face_models()
         signal.signal(signal.SIGINT, on_stop)

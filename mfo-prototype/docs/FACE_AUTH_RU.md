@@ -12,21 +12,21 @@
 
 Только после обоих шагов сервер выдаёт одноразовый `face_token`, и только с ним принимается заявка.
 
-## Где код (рефакторинг: всё про лицо в одной папке `face_auth/`)
+## Где код (рефакторинг: всё про лицо в одной папке `app/face_auth/`)
 | Файл | Что делает |
 |---|---|
-| `face_auth/config.py` | все настройки и пороги (`FACE_*` из `.env`) |
-| `face_auth/engine.py` | OpenCV: YuNet находит лицо и 5 точек, SFace делает вектор из 128 чисел (обычный и зеркальный) |
-| `face_auth/matching.py` | косинусное сходство; лучший результат по всем 3 отпечаткам и по обычному/зеркальному кадру |
-| `face_auth/liveness.py` | математика поворота головы (чистая математика, без OpenCV) |
-| `face_auth/service.py` | биометрия `enroll()`, шаг 1 `start_check()` и шаг 2 `finish_check()` |
-| `face_auth/storage.py` | таблицы `face_enrollments` (биометрия при регистрации), `face_references` (3 отпечатка клиента), `face_challenges` (задание на поворот), `face_tokens` (одноразовый токен) |
-| `face_auth/gate.py` | без `face_token` заявка не принимается (403); без биометрии регистрация не проходит |
-| `face_auth/router.py` | `POST /api/face/enroll/start`, `/enroll/finish`, `/verify`, `/liveness`, страница `/face` |
-| `templates/_face_camera.html`, `_face_camera_js.html` | общая камера (подсказки, прогресс, кадры) для регистрации и `/face` |
-| `templates/register.html` | кнопка «Пройти биометрию», скрытое поле `enrollment_token` |
-| `templates/face.html` | проверка перед заявкой |
-| `main.py` | подключает роутер (`app.include_router`), вызывает гейт в `POST /api/applications` и проверку биометрии в регистрации |
+| `app/core/config.py` (`FaceSettings`) | все настройки и пороги (`FACE_*` из `.env`), вместе с остальными настройками проекта |
+| `app/face_auth/engine.py` | OpenCV: YuNet находит лицо и 5 точек, SFace делает вектор из 128 чисел (обычный и зеркальный) |
+| `app/face_auth/matching.py` | косинусное сходство; лучший результат по всем 3 отпечаткам и по обычному/зеркальному кадру |
+| `app/face_auth/liveness.py` | математика поворота головы (чистая математика, без OpenCV) |
+| `app/face_auth/service.py` | биометрия `enroll()`, шаг 1 `start_check()` и шаг 2 `finish_check()` |
+| `app/face_auth/storage.py` | таблицы `face_enrollments` (биометрия при регистрации), `face_references` (3 отпечатка клиента), `face_challenges` (задание на поворот), `face_tokens` (одноразовый токен) |
+| `app/face_auth/gate.py` | без `face_token` заявка не принимается (403); без биометрии регистрация не проходит |
+| `app/face_auth/router.py` | `POST /api/face/enroll/start`, `/enroll/finish`, `/verify`, `/liveness`, страница `/face` |
+| `app/web/templates/_face_camera.html`, `_face_camera_js.html` | общая камера (подсказки, прогресс, кадры) для регистрации и `/face` |
+| `app/web/templates/register.html` | кнопка «Пройти биометрию», скрытое поле `enrollment_token` |
+| `app/web/templates/face.html` | проверка перед заявкой |
+| `app/main.py`, `app/api/applications.py`, `app/services/clients.py` | подключение роутера; гейт в `POST /api/applications`; проверка биометрии при регистрации |
 
 ## Как распознаётся лицо (шаг 1)
 1. **Детекция.** Нейросеть **YuNet** находит прямоугольник с лицом и **5 точек**: 2 глаза, кончик носа, 2 уголка рта.
@@ -172,7 +172,7 @@ POST /api/applications     {..., "face_token": "..."}
 - **Для защиты:** пройти проверку своей камерой и записать свои числа (score, turn).
 
 ## Использование AI (требование преподавателя)
-- **AI сгенерировал:** пакет `face_auth/`, `face.html`, биометрию в `register.html`, тесты, этот файл.
+- **AI сгенерировал:** пакет `app/face_auth/`, `face.html`, биометрию в `register.html`, тесты, этот файл.
 - **Что я должен понимать:** detect → align → embedding → cosine; почему 0.363; почему нос (3D vs плоское фото);
   зачем делить на расстояние между глазами; почему порядок случайный; почему решает сервер; почему снимки не сохраняются.
 
@@ -193,7 +193,7 @@ POST /api/applications     {..., "face_token": "..."}
 ## Визуальные подсказки поверх камеры
 
 Кроме текста сверху, на самом видео показывается полупрозрачная картинка (inline SVG + CSS, без внешних файлов),
-она меняется вместе с шагом (`FaceCam.hint(...)` в `templates/_face_camera_js.html`):
+она меняется вместе с шагом (`FaceCam.hint(...)` в `app/web/templates/_face_camera_js.html`):
 
 | Шаг | Картинка |
 |---|---|

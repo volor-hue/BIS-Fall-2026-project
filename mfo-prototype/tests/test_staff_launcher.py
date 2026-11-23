@@ -14,13 +14,13 @@ from aiogram.enums import ParseMode
 from aiogram.methods import AnswerCallbackQuery, SendMessage
 from aiogram.types import CallbackQuery, Chat, Message, Update, User
 
-import database
+from app.db import database
 import run
-import telegram_bot
-import telegram_service
-import telegram_staff
-import telegram_text
-from approval import INTEREST_RATE, build_schedule, decide_application, run_checks
+from bot import main as telegram_bot
+from bot import service as telegram_service
+from bot import staff as telegram_staff
+from bot import texts as telegram_text
+from app.services.approval import INTEREST_RATE, build_schedule, decide_application, run_checks
 from test_telegram import MockSession
 
 _SEQ = itertools.count(1)

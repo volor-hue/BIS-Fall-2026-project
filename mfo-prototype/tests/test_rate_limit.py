@@ -7,9 +7,8 @@ import logging
 from fastapi.testclient import TestClient
 from limits import parse_many
 
-import main
-import rate_limit
-import telegram_env
+from app import main
+from app.core import config, rate_limit
 
 WRONG_LOGIN = {"login": "admin", "password": "wrong"}
 BAD_REGISTRATION = {"full_name": "x", "iin": "12", "phone": "1", "email": "x@x.kz",
@@ -112,21 +111,21 @@ def test_spam_writes_one_audit_line_per_minute(client, caplog):
 def test_limits_come_from_env_file_and_environment(tmp_path, monkeypatch):
     env_file = tmp_path / ".env"
     env_file.write_text("MFO_RATE_LIMIT_SUBMIT=3/minute\nTELEGRAM_BOT_TOKEN=secret\n", encoding="utf-8")
-    file_values = telegram_env.read_env_file(str(env_file))
+    file_values = config.read_env_file(str(env_file))
 
     monkeypatch.delenv("MFO_RATE_LIMIT_SUBMIT", raising=False)
-    assert rate_limit.read_limit("MFO_RATE_LIMIT_SUBMIT", file_values) == "3/minute"
+    assert config.read_limit("MFO_RATE_LIMIT_SUBMIT", file_values) == "3/minute"
     # A variable set in the environment wins over the .env file.
     monkeypatch.setenv("MFO_RATE_LIMIT_SUBMIT", "7/minute")
-    assert rate_limit.read_limit("MFO_RATE_LIMIT_SUBMIT", file_values) == "7/minute"
+    assert config.read_limit("MFO_RATE_LIMIT_SUBMIT", file_values) == "7/minute"
     # Nothing set at all -> the default.
     monkeypatch.delenv("MFO_RATE_LIMIT_SUBMIT")
-    assert rate_limit.read_limit("MFO_RATE_LIMIT_SUBMIT", {}) == "10/minute"
+    assert config.read_limit("MFO_RATE_LIMIT_SUBMIT", {}) == "10/minute"
 
 
 def test_broken_limit_falls_back_to_default_with_warning(monkeypatch, caplog):
     # A typo in .env must not switch the protection off.
     monkeypatch.setenv("MFO_RATE_LIMIT_AUTH", "five per minit")
-    assert rate_limit.read_limit("MFO_RATE_LIMIT_AUTH", {}) == "5/minute"
+    assert config.read_limit("MFO_RATE_LIMIT_AUTH", {}) == "5/minute"
     warnings = [rec for rec in caplog.records if "bad rate limit" in rec.getMessage()]
     assert warnings and warnings[0].levelno == logging.WARNING

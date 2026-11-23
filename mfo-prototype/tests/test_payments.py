@@ -37,7 +37,7 @@ def carol(client, as_user):
 # ---------- pure checks ----------
 
 def test_luhn_brand_and_expiry():
-    from payments import cards
+    from app.payments import cards
 
     assert cards.luhn_ok("4242424242424242") and not cards.luhn_ok("4242424242424241")
     assert cards.brand_of("4242424242424242") == "Visa"
@@ -56,7 +56,7 @@ def test_luhn_brand_and_expiry():
 
 
 def test_qr_svg_is_a_real_qr():
-    from payments import qr
+    from app.payments import qr
 
     rows = qr.matrix("https://kaspi.kz/pay/MFO-DEMO?payment=1&amount=9455.73&ref=abc")
     assert len(rows) in (33, 37, 41) and all(len(r) == len(rows) for r in rows)
@@ -86,7 +86,7 @@ def test_card_is_saved_without_number_and_cvv(carol):
     saved = r.json()
     assert saved["last4"] == "4242" and saved["brand"] == "Visa" and saved["holder"] == "CAROL TEST"
     assert saved["is_default"] is True                            # the first card is the default
-    import database
+    from app.db import database
 
     conn = database.get_connection()
     row = dict(conn.execute("SELECT * FROM payment_cards").fetchone())

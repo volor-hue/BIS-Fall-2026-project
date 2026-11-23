@@ -6,9 +6,10 @@ import os
 
 import pytest
 
-import database
-import log_config
-from log_config import clean, mask_login
+from app.core import logs as log_config
+from app.core.logs import clean, mask_login
+from app.core.security import hash_password
+from app.db import database
 
 PASSWORD = "Sup3r-Secret-pass"
 IIN = "990101300456"
@@ -34,7 +35,7 @@ def test_register_login_logout_are_audited_without_secrets(client, caplog):
     assert any("event=login_ok" in line and "role=client" in line for line in lines)
     assert any("event=logout" in line and "user=client:" in line for line in lines)
     # Secrets and personal data never get into ANY log line.
-    for secret in (PASSWORD, database.hash_password(PASSWORD), IIN, EMAIL):
+    for secret in (PASSWORD, hash_password(PASSWORD), IIN, EMAIL):
         assert secret not in caplog.text
 
 

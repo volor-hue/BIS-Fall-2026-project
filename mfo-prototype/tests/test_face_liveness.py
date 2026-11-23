@@ -5,7 +5,7 @@ import random
 
 import pytest
 
-from face_auth import liveness, matching
+from app.face_auth import liveness, matching
 from face_fakes import FACES, fake_analyze, image, landmarks, unit
 
 

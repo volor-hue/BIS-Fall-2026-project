@@ -1,8 +1,8 @@
 # tests/test_approval.py
-# Unit tests for the business rules in approval.py. Run with:  pytest
+# Unit tests for the business rules in app/services/approval.py. Run with:  pytest
 from datetime import date
 
-from approval import build_schedule, decide_application, run_checks
+from app.services.approval import build_schedule, decide_application, run_checks
 
 
 def test_small_loan_affordable_is_auto_approved():

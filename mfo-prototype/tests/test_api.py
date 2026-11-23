@@ -3,7 +3,7 @@
 # (like a browser/Postman, but without starting a server).
 import sqlite3
 
-import database
+from app.db import database
 
 CLIENT = {
     "iin": "050101500123", "full_name": "Test Client", "birth_date": "2005-01-01",

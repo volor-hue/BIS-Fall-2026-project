@@ -17,62 +17,84 @@ python run.py                 # сайт http://127.0.0.1:8001 + Telegram-бот
 
 ## Структура проекта
 
+Код разложен по **слоям**: запрос проходит сверху вниз (маршрут → бизнес-логика → база), и каждый слой
+знает только о слоях ниже. Подробная схема и правила: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
 ```
 mfo-prototype/
-├── main.py              # FastAPI: REST API (JSON) + HTML-страницы
-├── database.py          # SQLite: 8 таблиц по ERD + Telegram, все SQL-запросы
-├── approval.py          # бизнес-правила: одобрение, автопроверки, график платежей
-├── log_config.py        # логи: logs/app.log (запросы, ошибки) и logs/audit.log (кто что сделал)
-├── rate_limit.py        # защита от спама запросами (slowapi): лимиты по IP, ответ 429
-├── auth_jwt.py          # JWT (HS256): выдача и проверка подписанных токенов входа
-├── face_auth/           # ВСЁ про проверку лица (подробно: docs/FACE_AUTH_RU.md)
-│   ├── config.py        # настройки и пороги (FACE_* из .env)
-│   ├── engine.py        # OpenCV: YuNet находит лицо и 5 точек, SFace делает вектор из 128 чисел
-│   ├── matching.py      # косинусное сходство, лучшее из всех фото, обычный и зеркальный кадр
-│   ├── liveness.py      # математика поворота головы (защита от фото на телефоне)
-│   ├── service.py       # биометрия при регистрации, шаг 1 (сравнение) и шаг 2 (повороты головы)
-│   ├── storage.py       # таблицы face_enrollments, face_references, face_challenges, face_tokens
-│   ├── gate.py          # без face_token заявку не принять (403), без биометрии не зарегистрироваться
-│   └── router.py        # /api/face/enroll/*, /api/face/verify, /api/face/liveness, страница /face
-├── payments/            # способы оплаты платежа (ДЕМО, деньги не списываются)
-│   ├── cards.py         # проверка карты: Луна, тип (Visa/Mastercard/Mir...), срок ММ/ГГ, CVV
-│   ├── storage.py       # таблицы payment_cards, kaspi_qr_sessions, payment_transactions
-│   ├── qr.py            # маленький генератор QR-кода на чистом Python -> SVG (Kaspi QR)
-│   ├── service.py       # чем оплачен платёж: карта / PayPal / Kaspi QR / manual
-│   └── router.py        # /api/payment-methods/cards..., /api/repayments/{id}/kaspi-qr
-├── run.py               # одна команда: сайт (127.0.0.1:8001) + Telegram-бот
-├── telegram_*.py        # Telegram-бот клиента (см. README_TELEGRAM.md)
-├── .env.example         # образец .env: токен бота, лимиты запросов (скопировать в .env)
-├── requirements.txt     # библиотеки
-├── pytest.ini           # настройки pytest
+├── app/                    # веб-приложение (FastAPI)
+│   ├── main.py             # только СБОРКА приложения: логи, лимиты, ошибки, подключение маршрутов
+│   ├── api/                # слой маршрутов REST API (JSON), по модулю на сущность
+│   │   ├── deps.py         # кто вызывает и что ему можно: JWT, 401/403, «только свои данные»
+│   │   ├── schemas.py      # тела запросов (Pydantic)
+│   │   ├── auth.py         # /api/auth/register, /login, /me
+│   │   ├── clients.py      # /api/clients, работа (employment), документы, /api/employees
+│   │   ├── applications.py # /api/applications: подача, проверки, решение сотрудника
+│   │   └── loans.py        # /api/loans, график платежей, оплата платежа
+│   ├── web/                # HTML-страницы
+│   │   ├── pages.py        # /, /register, /login, /logout, /dashboard, /admin
+│   │   ├── templates.py    # общий Jinja2 для всех страниц
+│   │   └── templates/      # HTML-шаблоны (base, register, login, dashboard, admin, face, камера)
+│   ├── services/           # слой бизнес-логики (ничего не знает про HTTP)
+│   │   ├── approval.py     # чистые правила: одобрение, автопроверки, аннуитетный график
+│   │   ├── loans.py        # заявка -> решение -> кредит с графиком -> оплата
+│   │   ├── clients.py      # регистрация (+ биометрия), работа, удаление клиента
+│   │   ├── documents.py    # сохранение загруженных документов
+│   │   ├── auth.py         # проверка логина и пароля
+│   │   └── errors.py       # ошибки бизнес-правил (404/400), их переводит в ответ app/main.py
+│   ├── db/
+│   │   └── database.py     # слой базы данных: ВСЕ SQL-запросы, 8 таблиц по ERD + Telegram
+│   ├── core/               # общее для всех слоёв
+│   │   ├── config.py       # ВСЕ настройки проекта в одном месте (.env, лимиты, JWT, лицо, бот) + проверка
+│   │   ├── security.py     # пароли (хеш) и JWT (HS256): выдача и проверка токенов
+│   │   ├── logs.py         # логи: logs/app.log (запросы, ошибки) и logs/audit.log (кто что сделал)
+│   │   └── rate_limit.py   # защита от спама запросами (slowapi): лимиты по IP, ответ 429
+│   ├── face_auth/          # ВСЁ про проверку лица (подробно: docs/FACE_AUTH_RU.md)
+│   │   ├── engine.py       # OpenCV: YuNet находит лицо и 5 точек, SFace делает вектор из 128 чисел
+│   │   ├── matching.py     # косинусное сходство, лучшее из всех фото, обычный и зеркальный кадр
+│   │   ├── liveness.py     # математика поворота головы (защита от фото на телефоне)
+│   │   ├── service.py      # биометрия при регистрации, шаг 1 (сравнение) и шаг 2 (повороты головы)
+│   │   ├── storage.py      # таблицы face_enrollments, face_references, face_challenges, face_tokens
+│   │   ├── gate.py         # без face_token заявку не принять (403), без биометрии не зарегистрироваться
+│   │   └── router.py       # /api/face/enroll/*, /api/face/verify, /api/face/liveness, страница /face
+│   └── payments/           # способы оплаты платежа (ДЕМО, деньги не списываются)
+│       ├── cards.py        # проверка карты: Луна, тип (Visa/Mastercard/Mir...), срок ММ/ГГ, CVV
+│       ├── storage.py      # таблицы payment_cards, kaspi_qr_sessions, payment_transactions
+│       ├── qr.py           # маленький генератор QR-кода на чистом Python -> SVG (Kaspi QR)
+│       ├── service.py      # чем оплачен платёж: карта / PayPal / Kaspi QR / manual
+│       └── router.py       # /api/payment-methods/cards..., /api/repayments/{id}/kaspi-qr
+├── bot/                    # Telegram-бот клиента, отдельная программа (см. README_TELEGRAM.md)
+│   ├── main.py             # обработчики и long polling:            python -m bot
+│   ├── service.py          # коды привязки, связи, чтение только своих данных
+│   ├── staff.py            # список сотрудников и поиск клиента
+│   ├── texts.py            # русские тексты, экранирование HTML
+│   └── operator_cli.py     # команды оператора:  python -m bot.operator_cli issue --client-id 1
+├── run.py                  # одна команда: сайт (127.0.0.1:8001) + Telegram-бот
+├── .env.example            # образец .env: все настройки с пояснениями (скопировать в .env)
+├── requirements.txt        # библиотеки
+├── pytest.ini              # настройки pytest
 ├── docs/
-│   ├── ERD.md           # ER-диаграмма (mermaid) и таблица связей
-│   └── FACE_AUTH_RU.md  # как работает проверка лица (для защиты)
-├── templates/           # HTML-страницы
-│   ├── base.html        # общий шаблон (меню, Bootstrap, JS-помощники)
-│   ├── register.html    # регистрация (clients + employment + documents) + «Пройти биометрию»
-│   ├── _face_camera.html, _face_camera_js.html  # общая камера для регистрации и /face
-│   ├── login.html       # вход клиента (email) или сотрудника (login)
-│   ├── dashboard.html   # кабинет клиента: заявки, кредиты, график, оплата
-│   ├── face.html        # веб-камера: смотрите прямо -> поверните голову вправо/влево -> отправка заявки
-│   └── admin.html       # кабинет сотрудника: заявки, проверки, Approve/Reject, кредиты
+│   ├── ARCHITECTURE.md     # слои, правила зависимостей, путь запроса
+│   ├── ERD.md              # ER-диаграмма (mermaid) и таблица связей
+│   └── FACE_AUTH_RU.md     # как работает проверка лица (для защиты)
 ├── tests/
-│   ├── conftest.py      # общая настройка тестов (временная БД и папка логов)
-│   ├── test_approval.py # тесты бизнес-правил
-│   ├── test_api.py      # тесты API, внешних ключей, каскадного удаления, страниц
-│   ├── test_logging.py  # тесты логов: события пишутся, пароли и ИИН не пишутся
-│   ├── test_rate_limit.py # тесты лимитов: после N запросов ответ 429 и WARNING в логе
-│   ├── test_jwt.py      # тесты JWT: подпись, срок, подделка, /api/auth/*, cookie
-│   ├── test_access.py   # тесты доступа: 401 без токена, 403 к чужим данным, права сотрудника
-│   ├── test_face.py     # тесты проверки лица через API и face-гейта (без настоящих фото, нейросети подменяются)
-│   ├── test_face_liveness.py # тесты математики поворота, зеркала, лучшего из фото (выдуманные точки)
+│   ├── conftest.py         # общая настройка тестов (временная БД и папка логов)
+│   ├── test_approval.py    # тесты бизнес-правил
+│   ├── test_api.py         # тесты API, внешних ключей, каскадного удаления, страниц
+│   ├── test_logging.py     # тесты логов: события пишутся, пароли и ИИН не пишутся
+│   ├── test_rate_limit.py  # тесты лимитов: после N запросов ответ 429 и WARNING в логе
+│   ├── test_jwt.py         # тесты JWT: подпись, срок, подделка, /api/auth/*, cookie
+│   ├── test_access.py      # тесты доступа: 401 без токена, 403 к чужим данным, права сотрудника
+│   ├── test_face.py        # тесты проверки лица через API и face-гейта (нейросети подменяются)
+│   ├── test_face_liveness.py # тесты математики поворота, зеркала, лучшего из фото
 │   ├── test_face_enroll.py # тесты биометрии при регистрации
-│   ├── face_fakes.py    # выдуманные «лица» для тестов
+│   ├── test_payments.py    # тесты способов оплаты
+│   ├── face_fakes.py       # выдуманные «лица» для тестов
 │   └── test_telegram.py, test_staff_launcher.py  # тесты бота и run.py
-├── models/              # создаётся сама: модели YuNet + SFace (в git не попадает)
-├── uploads/             # сюда сохраняются загруженные документы
-├── logs/                # создаётся сама: app.log и audit.log (в git не попадает)
-└── README_RUN.md        # эта инструкция
+├── models/                 # создаётся сама: модели YuNet + SFace (в git не попадает)
+├── uploads/                # сюда сохраняются загруженные документы
+├── logs/                   # создаётся сама: app.log и audit.log (в git не попадает)
+└── README_RUN.md           # эта инструкция
 ```
 
 База `mfo.db` создаётся сама при первом запуске.
@@ -80,10 +102,10 @@ mfo-prototype/
 ## База данных (по ERD команды)
 
 8 таблиц: `clients`, `employees`, `employment`, `documents`, `loan_applications`, `client_checks`, `loans`, `repayments`.
-Плюс служебные таблицы вне ERD: `face_enrollments`, `face_references` (биометрия: 3 вектора лица клиента, без картинок), `face_challenges` и `face_tokens` (задание на поворот головы и одноразовый токен проверки лица, хранится только SHA-256; создаёт `face_auth/storage.py`), таблицы оплаты `payment_cards` (только holder, тип, последние 4 цифры, срок, основная ли), `kaspi_qr_sessions`, `payment_transactions` (создаёт `payments/storage.py`) и таблицы Telegram-бота (`telegram_links`, `telegram_pairing_codes`, `telegram_link_attempts`).
+Плюс служебные таблицы вне ERD: `face_enrollments`, `face_references` (биометрия: 3 вектора лица клиента, без картинок), `face_challenges` и `face_tokens` (задание на поворот головы и одноразовый токен проверки лица, хранится только SHA-256; создаёт `app/face_auth/storage.py`), таблицы оплаты `payment_cards` (только holder, тип, последние 4 цифры, срок, основная ли), `kaspi_qr_sessions`, `payment_transactions` (создаёт `app/payments/storage.py`) и таблицы Telegram-бота (`telegram_links`, `telegram_pairing_codes`, `telegram_link_attempts`).
 Диаграмма и все связи описаны в [`docs/ERD.md`](docs/ERD.md).
 
-**Что мы добавили к ERD** (это отмечено и в комментариях в `database.py`):
+**Что мы добавили к ERD** (это отмечено и в комментариях в `app/db/database.py`):
 - `clients`: `email`, `password_hash`, `marital_status`, `created_at` нужны для регистрации и входа;
 - `employees`: `password_hash` нужен для входа сотрудника;
 - `loan_applications`: `term_months`, `purpose`, `approval_type`, `created_at` нужны для правила одобрения.
@@ -126,7 +148,7 @@ python run.py --web-only   # только сайт
 - Сайт: **http://127.0.0.1:8001**
 - Swagger (все эндпоинты): **http://127.0.0.1:8001/docs**
 - Остановить: `Ctrl + C`
-- Можно и без run.py: `uvicorn main:app --reload --port 8001`.
+- Можно и без run.py: `uvicorn app.main:app --reload --port 8001`.
 - При первом запуске в `models/` скачиваются модели для проверки лица (~38 МБ, нужен интернет).
 
 > Ниже в примерах адрес `127.0.0.1:8000` — если вы запускали через `run.py`, используйте порт **8001**.
@@ -272,7 +294,7 @@ pytest
 ## 9. Логи
 
 Сайт пишет логи в консоль и в папку `logs/` (она создаётся сама). Используется стандартный модуль Python `logging`,
-настройка лежит в `log_config.py`.
+настройка лежит в `app/core/logs.py`.
 
 | Файл | Что внутри |
 |------|------------|
@@ -309,7 +331,7 @@ grep "user=employee:1" logs/audit.log        # всё, что сделал со�
 
 ## 10. Защита от спама запросами (rate limit)
 
-Библиотека **slowapi** считает запросы с каждого IP-адреса. Настройка лежит в `rate_limit.py`.
+Библиотека **slowapi** считает запросы с каждого IP-адреса. Значения лимитов задаются в `app/core/config.py`, сам ограничитель лежит в `app/core/rate_limit.py`.
 
 | Что | Лимит по умолчанию | Переменная |
 |-----|--------------------|------------|
@@ -335,8 +357,8 @@ MFO_RATE_LIMIT_AUTH=5/minute;50/hour
 
 ## Частые проблемы
 
-- `uvicorn` не найден: не активирован venv или не установлены зависимости. Можно запустить так: `python -m uvicorn main:app --reload`.
-- `Address already in use`: порт занят, запустите `uvicorn main:app --reload --port 8001`.
+- `uvicorn` не найден: не активирован venv или не установлены зависимости. Можно запустить так: `python -m uvicorn app.main:app --reload`.
+- `Address already in use`: порт занят, запустите `uvicorn app.main:app --reload --port 8001`.
 - Страница без стилей: Bootstrap грузится из интернета (CDN), нужен доступ к сети.
 - Ошибка `no such column` после обновления кода: удалите старый `mfo.db` (см. раздел 8), потому что схема изменилась.
 
@@ -356,7 +378,7 @@ MFO_RATE_LIMIT_AUTH=5/minute;50/hour
 
 ## JWT-авторизация
 
-Вход на сайте и через API подтверждается **JWT-токеном** (HS256, подпись секретом сервера, `auth_jwt.py`).
+Вход на сайте и через API подтверждается **JWT-токеном** (HS256, подпись секретом сервера, `app/core/security.py`).
 Раньше в cookie лежал просто `client_id`/`employee_id`, и его мог подменить кто угодно; теперь это
 подписанный токен в HttpOnly-cookie `access_token`, изменённый или просроченный токен не принимается.
 

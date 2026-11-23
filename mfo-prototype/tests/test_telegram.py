@@ -18,13 +18,12 @@ from aiogram.enums import ParseMode
 from aiogram.methods import AnswerCallbackQuery, SendMessage
 from aiogram.types import CallbackQuery, Chat, Message, Update, User
 
-import database
-import telegram_bot
-import telegram_env
-import telegram_operator
-import telegram_service
-import telegram_text
-from approval import INTEREST_RATE, build_schedule, decide_application, run_checks
+from app.db import database
+from bot import main as telegram_bot
+from bot import operator_cli as telegram_operator
+from bot import service as telegram_service
+from bot import texts as telegram_text
+from app.services.approval import INTEREST_RATE, build_schedule, decide_application, run_checks
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ALPHABET = telegram_service.ALPHABET
@@ -513,7 +512,7 @@ def test_operator_entrypoint_uses_mfo_db(tmp_path):
     env["MFO_DB"] = str(db_path)
     env.pop("TELEGRAM_BOT_TOKEN", None)
     missing = subprocess.run(
-        [sys.executable, "telegram_operator.py", "status", "--client-id", "1"],
+        [sys.executable, "-m", "bot.operator_cli", "status", "--client-id", "1"],
         cwd=ROOT, env=env, capture_output=True, text=True, check=False,
     )
     assert missing.returncode == 2
@@ -522,13 +521,13 @@ def test_operator_entrypoint_uses_mfo_db(tmp_path):
     assert db_path.exists()
 
     create = (
-        "import database; database.init_db();"
+        "from app.db import database; database.init_db();"
         "database.create_client('850101300999','Sub Client','1985-01-01','+77009998877',"
         "'SECRET ADDRESS 9','secret-mail@test.kz','pass123','Single','2026-11-08 09:00:00')"
     )
     subprocess.run([sys.executable, "-c", create], cwd=ROOT, env=env, check=True)
     issued = subprocess.run(
-        [sys.executable, "telegram_operator.py", "issue", "--client-id", "1"],
+        [sys.executable, "-m", "bot.operator_cli", "issue", "--client-id", "1"],
         cwd=ROOT, env=env, capture_output=True, text=True, check=False,
     )
     assert issued.returncode == 0
@@ -550,11 +549,11 @@ def test_env_file_sets_database_without_overriding_process(tmp_path, monkeypatch
     monkeypatch.delenv("MFO_DB", raising=False)
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.setattr(database, "DB_FILE", database.DB_FILE)
-    bound = telegram_env.bind_database_path()
+    bound = database.bind_database_path()
     assert bound == os.path.abspath(tmp_path / "from-file.db")
     assert os.environ["TELEGRAM_BOT_TOKEN"] == "PUT_YOUR_TOKEN_HERE"
     monkeypatch.setenv("MFO_DB", str(tmp_path / "from-process.db"))
-    assert telegram_env.bind_database_path() == os.path.abspath(tmp_path / "from-process.db")
+    assert database.bind_database_path() == os.path.abspath(tmp_path / "from-process.db")
 
 
 def test_bot_ignores_start_payload_group_and_callback_tamper(tmp_path, monkeypatch, caplog):
@@ -746,7 +745,12 @@ def test_openapi_stays_30_operations_without_telegram(client):
     blob = str(spec).lower()
     assert "telegram" not in blob and "pairing" not in blob
     assert client.get("/docs").status_code == 200
-    assert "telegram" not in open(os.path.join(ROOT, "main.py"), encoding="utf-8").read().lower()
+    # The web app (app/) never imports the bot: the bot is a separate program (bot/).
+    for folder, _, filenames in os.walk(os.path.join(ROOT, "app")):
+        for name in filenames:
+            if name.endswith(".py"):
+                text = open(os.path.join(folder, name), encoding="utf-8").read()
+                assert "import bot" not in text and "from bot" not in text, name
 
 
 def test_bot_does_not_start_without_a_real_token(monkeypatch):

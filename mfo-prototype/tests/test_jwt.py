@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-import auth_jwt
+from app.core import security
 
 NEW_CLIENT = {
     "iin": "990101300777", "full_name": "Jwt Client", "birth_date": "1999-01-01",
@@ -23,43 +23,43 @@ def _b64(data):
 # ---------- the token itself ----------
 
 def test_token_roundtrip():
-    payload = auth_jwt.decode_token(auth_jwt.create_token("client", 7))
+    payload = security.decode_token(security.create_token("client", 7))
     assert payload["role"] == "client" and payload["uid"] == 7 and payload["sub"] == "client:7"
-    assert payload["exp"] - payload["iat"] == auth_jwt.EXPIRE_SECONDS
+    assert payload["exp"] - payload["iat"] == security.EXPIRE_SECONDS
 
 
 def test_edited_payload_is_rejected():
-    header, _, signature = auth_jwt.create_token("client", 7).split(".")
+    header, _, signature = security.create_token("client", 7).split(".")
     now = int(time.time())
     forged = _b64({"sub": "employee:1", "role": "employee", "uid": 1, "iat": now, "exp": now + 999})
-    with pytest.raises(auth_jwt.TokenError):
-        auth_jwt.decode_token(f"{header}.{forged}.{signature}")
+    with pytest.raises(security.TokenError):
+        security.decode_token(f"{header}.{forged}.{signature}")
 
 
 def test_alg_none_is_rejected():
     now = int(time.time())
     token = _b64({"alg": "none", "typ": "JWT"}) + "." + _b64(
         {"role": "employee", "uid": 1, "iat": now, "exp": now + 999}) + "."
-    with pytest.raises(auth_jwt.TokenError):
-        auth_jwt.decode_token(token)
+    with pytest.raises(security.TokenError):
+        security.decode_token(token)
 
 
 def test_expired_token_is_rejected():
-    old = auth_jwt.create_token("client", 7, now=time.time() - auth_jwt.EXPIRE_SECONDS - 5)
-    with pytest.raises(auth_jwt.TokenError):
-        auth_jwt.decode_token(old)
+    old = security.create_token("client", 7, now=time.time() - security.EXPIRE_SECONDS - 5)
+    with pytest.raises(security.TokenError):
+        security.decode_token(old)
 
 
 @pytest.mark.parametrize("junk", ["", "abc", "a.b.c", "x" * 5000, "...."])
 def test_garbage_is_rejected(junk):
-    with pytest.raises(auth_jwt.TokenError):
-        auth_jwt.decode_token(junk)
+    with pytest.raises(security.TokenError):
+        security.decode_token(junk)
 
 
 def test_wrong_role_gives_none():
-    token = auth_jwt.create_token("client", 3)
-    assert auth_jwt.user_from_token(token, "client") == 3
-    assert auth_jwt.user_from_token(token, "employee") is None
+    token = security.create_token("client", 3)
+    assert security.user_from_token(token, "client") == 3
+    assert security.user_from_token(token, "employee") is None
 
 
 # ---------- API: register / login / me ----------
@@ -124,7 +124,7 @@ def test_web_login_sets_jwt_cookie(client):
     set_cookie = r.headers.get("set-cookie", "")
     assert "access_token=" in set_cookie and "HttpOnly" in set_cookie
     token = client.cookies.get("access_token")
-    assert auth_jwt.decode_token(token)["role"] == "employee"
+    assert security.decode_token(token)["role"] == "employee"
     assert client.get("/admin").status_code == 200
 
 
@@ -136,7 +136,7 @@ def test_old_plain_cookie_no_longer_works(client):
 
 
 def test_forged_cookie_is_rejected(client):
-    client.cookies.set("access_token", auth_jwt.create_token("client", 1) + "x")
+    client.cookies.set("access_token", security.create_token("client", 1) + "x")
     assert client.get("/dashboard", follow_redirects=False).status_code == 303
 
 

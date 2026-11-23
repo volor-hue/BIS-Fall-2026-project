@@ -4,7 +4,7 @@
 # fake_analyze() turns the tag into a FaceSample with chosen 5 points and embedding.
 import numpy as np
 
-from face_auth.engine import FaceError, FaceSample, ManyFacesError
+from app.face_auth.engine import FaceError, FaceSample, ManyFacesError
 
 FAKE_JPEG = b"\xff\xd8\xff\xe0" + b"0" * 100
 FAKE_PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 100

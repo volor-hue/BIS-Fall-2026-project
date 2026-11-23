@@ -116,7 +116,7 @@ def test_mirrored_webcam_picture_still_matches(person, fake_engine):
 
 def test_best_of_enrolled_references(person, fake_engine):
     # If the straight reference does not look like the live face, a turned one still can.
-    from face_auth import storage
+    from app.face_auth import storage
     from face_fakes import ME, unit
 
     storage.save_references(person["id"], [
@@ -197,7 +197,7 @@ def test_challenge_is_one_time(person, fake_engine):
 
 
 def test_expired_unknown_or_foreign_challenge_is_403(person, client, fake_engine):
-    from face_auth import storage
+    from app.face_auth import storage
 
     anchor = {"embedding": [1.0] + [0.0] * 127, "yaw": 0.0}
     expired = storage.create_challenge(person["id"], ["right", "left"], anchor, seconds=-1)
@@ -210,7 +210,7 @@ def test_expired_unknown_or_foreign_challenge_is_403(person, client, fake_engine
 
 
 def test_liveness_can_be_switched_off(person, fake_engine, monkeypatch):
-    from face_auth import config
+    from app.core.config import face as config
 
     monkeypatch.setattr(config, "LIVENESS_ENABLED", False)
     data = snapshot(person["api"]).json()

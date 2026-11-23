@@ -14,7 +14,7 @@ WEB_FORM = {"full_name": "Web Face", "iin": "900101300333", "phone": "+770100000
 @pytest.fixture
 def required(monkeypatch):
     # The real server default: biometrics are required (the tests run with FACE_ENROLL_REQUIRED=0).
-    from face_auth import config
+    from app.core.config import face as config
 
     monkeypatch.setattr(config, "ENROLL_REQUIRED", True)
 
@@ -32,7 +32,7 @@ def test_enrollment_gives_one_time_token(client, fake_engine):
 
 
 def test_web_registration_with_biometrics_saves_three_references(client, staff, fake_engine, required):
-    from face_auth import storage
+    from app.face_auth import storage
     from face_fakes import FACES
 
     token = enroll(client).json()["enrollment_token"]
@@ -67,7 +67,7 @@ def test_enrollment_token_is_one_time(client, fake_engine, required):
 
 
 def test_expired_enrollment_token_is_refused(client, fake_engine, required, monkeypatch):
-    from face_auth import config
+    from app.core.config import face as config
 
     monkeypatch.setattr(config, "ENROLL_TOKEN_MINUTES", -1)
     token = enroll(client).json()["enrollment_token"]
@@ -111,7 +111,7 @@ def test_enrollment_challenge_is_one_time(client, fake_engine):
 
 def test_old_account_enrolls_on_the_face_page(client, as_user, fake_engine):
     # An account created without biometrics (before this feature): enrolls once, saved to the account.
-    from face_auth import storage
+    from app.face_auth import storage
 
     assert client.post("/api/auth/register", json=CLIENT).status_code == 201
     user = as_user(CLIENT["email"], CLIENT["password"])
@@ -149,7 +149,7 @@ def test_camera_box_has_visual_hints_and_mirrored_preview(client, monkeypatch):
     assert 'id="face-hint"' in page and "l-straight" in page and "l-turn" in page and "l-ok" in page
     assert "FaceCam.hint" in page or "function hint(" in page
     assert "#video { transform: scaleX(-1); }" in page
-    import main
+    from app.web.templates import templates
 
-    monkeypatch.setitem(main.templates.env.globals, "face_camera_mirrored", True)
+    monkeypatch.setitem(templates.env.globals, "face_camera_mirrored", True)
     assert "#video { transform: scaleX(-1); }" not in client.get("/register").text

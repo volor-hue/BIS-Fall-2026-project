@@ -6,7 +6,7 @@ import tempfile
 
 import pytest
 
-# Let Python find main.py / database.py / approval.py in the parent folder.
+# Let Python find the packages app/ and bot/ in the parent folder.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Use a temporary database file, so tests never touch the real mfo.db.
@@ -28,13 +28,15 @@ os.environ["FACE_ENROLL_REQUIRED"] = "0"
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     # Every test gets a NEW empty database and its own uploads folder.
-    import database
-    import main
-    import rate_limit
     from fastapi.testclient import TestClient
 
+    from app import main
+    from app.core import rate_limit
+    from app.db import database
+    from app.services import documents
+
     monkeypatch.setattr(database, "DB_FILE", str(tmp_path / "test.db"))
-    monkeypatch.setattr(main, "UPLOAD_DIR", str(tmp_path / "uploads"))
+    monkeypatch.setattr(documents, "UPLOAD_DIR", str(tmp_path / "uploads"))
     database.init_db()
     # Rate limit counters live in memory: start every test from zero.
     rate_limit.reset()
@@ -45,18 +47,18 @@ def client(tmp_path, monkeypatch):
 def bearer(login, password):
     # Check the password like /api/auth/login does and return {"Authorization": "Bearer <token>"}.
     # (Not through HTTP, so the fixtures do not use up the login rate limit of the tests.)
-    import auth_jwt
-    import main
+    from app.core import security
+    from app.services.auth import check_credentials
 
-    user = main.check_credentials(login, password)
+    user = check_credentials(login, password)
     assert user is not None, "wrong test login or password"
-    return {"Authorization": "Bearer " + auth_jwt.create_token(*user)}
+    return {"Authorization": "Bearer " + security.create_token(*user)}
 
 
 def face_token_for(client_id, minutes=5):
     # A one-time face_token as if the client had just passed the face check (match + head turns)
     # (no camera and no OpenCV needed). Clients must send it with POST /api/applications.
-    from face_auth import storage
+    from app.face_auth import storage
 
     token = "test-face-token-" + str(client_id) + "-" + os.urandom(6).hex()
     storage.save_token_hash(client_id, storage.sha256(token), minutes)
@@ -66,8 +68,9 @@ def face_token_for(client_id, minutes=5):
 @pytest.fixture
 def staff(client):
     # A separate TestClient logged in as the seeded employee "admin" (Bearer token in every request).
-    import main
     from fastapi.testclient import TestClient
+
+    from app import main
 
     test_client = TestClient(main.app)
     test_client.headers.update(bearer("admin", "admin123"))
@@ -77,8 +80,9 @@ def staff(client):
 @pytest.fixture
 def as_user(client):
     # as_user("mail@test.kz", "pass123") -> a new TestClient logged in as this user.
-    import main
     from fastapi.testclient import TestClient
+
+    from app import main
 
     def make(login, password):
         test_client = TestClient(main.app)
@@ -92,7 +96,7 @@ def as_user(client):
 def fake_engine(monkeypatch):
     # Face tests: replace the neural networks with made-up faces (tests/face_fakes.py)
     # and record what was analysed.
-    from face_auth import engine
+    from app.face_auth import engine
     from face_fakes import fake_analyze
 
     calls = []

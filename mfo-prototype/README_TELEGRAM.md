@@ -47,7 +47,7 @@ MFO_TELEGRAM_STAFF_IDS=100000001
 
 Привязка Telegram **не закрывает** эти дыры. Она защищает только канал бота.
 
-Команды `telegram_operator.py` локальные. Отдельного HTTP-метода, который выдаёт код, нет. Кто может запустить этот файл и прочитать `mfo.db`, тот может выписать код и привязать свой Telegram к клиенту. Ограничьте учётную запись компьютера и права на файл базы. Не выкладывайте CLI в общий хостинг и не проксируйте его в веб.
+Команды `bot/operator_cli.py` локальные. Отдельного HTTP-метода, который выдаёт код, нет. Кто может запустить этот файл и прочитать `mfo.db`, тот может выписать код и привязать свой Telegram к клиенту. Ограничьте учётную запись компьютера и права на файл базы. Не выкладывайте CLI в общий хостинг и не проксируйте его в веб.
 
 ## Что умеет бот
 
@@ -74,7 +74,7 @@ MFO_TELEGRAM_STAFF_IDS=100000001
 
 И сайт, и бот открывают файл из переменной `MFO_DB` (если её нет — `mfo.db` в текущей папке). Задайте **один абсолютный путь** обоим процессам.
 
-Сайт читает переменную в момент импорта `database.py` и **не** читает `.env`. Бот и `telegram_operator.py` перед работой читают окружение и файл `.env` (уже заданная переменная процесса важнее файла).
+Сайт читает переменную в момент импорта `app/core/config.py`. Бот и `bot/operator_cli.py` перед работой читают окружение и файл `.env` (уже заданная переменная процесса важнее файла).
 
 ```bash
 cd mfo-prototype
@@ -99,7 +99,7 @@ export MFO_DB="/absolute/path/to/mfo-prototype/mfo.db"
 4. Локально скопируйте `.env.example` в `.env` и подставьте токен вместо `PUT_YOUR_TOKEN_HERE`.
 5. Не коммитьте `.env`, не вставляйте токен в чат и не кладите его в архив.
 
-В этом проекте токена нет. Пока в `.env` стоит образец, `python telegram_bot.py` завершится с кодом 2 и к Telegram не подключится.
+В этом проекте токена нет. Пока в `.env` стоит образец, `python -m bot` завершится с кодом 2 и к Telegram не подключится.
 
 ## Установка и запуск
 
@@ -117,14 +117,14 @@ export MFO_DB="$(pwd)/mfo.db"     # лучше абсолютный путь, к
 
 ```bash
 export MFO_DB="/absolute/path/to/mfo-prototype/mfo.db"
-uvicorn main:app --host 127.0.0.1 --port 8000
+uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 Бот, во втором терминале, с тем же `MFO_DB` и токеном в `.env` или в окружении:
 
 ```bash
 export MFO_DB="/absolute/path/to/mfo-prototype/mfo.db"
-python telegram_bot.py
+python -m bot
 ```
 
 Бот ходит в Telegram исходящим long polling (`start_polling`). Webhook и открытый HTTPS не нужны. Остановка: `Ctrl+C`.
@@ -136,7 +136,7 @@ python telegram_bot.py
 
 ```bash
 export MFO_DB="/absolute/path/to/mfo-prototype/mfo.db"
-python telegram_operator.py issue --client-id 1
+python -m bot.operator_cli issue --client-id 1
 ```
 
 Команда один раз печатает код `XXXX-XXXX`, id и имя. ИИН, телефон, почта и паспорт не печатаются. В базе лежит только хеш. Пока клиент привязан, новый код не выдаётся: сначала `unlink`.
@@ -154,13 +154,13 @@ python telegram_operator.py issue --client-id 1
 4. Проверка привязки без показа кода:
 
 ```bash
-python telegram_operator.py status --client-id 1
+python -m bot.operator_cli status --client-id 1
 ```
 
 5. Отвязка со стороны клиента: `/unlink`. Со стороны оператора:
 
 ```bash
-python telegram_operator.py unlink --client-id 1
+python -m bot.operator_cli unlink --client-id 1
 ```
 
 Отвязка также гасит ещё не использованные коды этого клиента. После этого для новой привязки нужен новый `issue`. Для сотрудника этот код не нужен: ему достаточно своего id в `MFO_TELEGRAM_STAFF_IDS`.
