@@ -41,6 +41,8 @@
         <thead><tr><th>#</th><th>Due date</th><th>Amount due</th><th>Status</th><th></th></tr></thead>
         <tbody id="schedule"></tbody>
       </table>
+      <!-- Early payoff (repayment_rules/): pay only the remaining principal and close the loan. -->
+      <div id="payoff-box" class="card card-body mb-4"></div>
     </div>
   </div>
 </div>
@@ -153,15 +155,35 @@ async function showSchedule(loanId) {
   const rows = await (await fetch(`/api/loans/${loanId}/repayments`)).json();
   let html = "";
   rows.forEach((p, i) => {
+    // Repayment rules: Overdue = not paid after the due date; it is paid together with the penalty.
+    const status = p.display_status || p.status;
+    const overdue = status === "Overdue";
     const button = p.status === "Paid" ? "" :
-      `<button class="btn btn-sm btn-success" onclick="pay(${p.payment_id}, ${Number(p.amount_due)})">Pay</button>`;
+      `<button class="btn btn-sm ${overdue ? "btn-danger" : "btn-success"}" onclick="pay(${p.payment_id}, ${Number(p.total_to_pay ?? p.amount_due)})">Pay</button>`;
     const how = p.paid_method ? ` ${logo(logoForPaid(p.paid_method), 16)} <small class="text-muted">${esc(p.paid_method)}</small>` : "";
-    html += `<tr><td>${i + 1}</td><td>${p.due_date}</td><td>${money(p.amount_due)}</td>
-      <td><span class="badge bg-${badge(p.status)}">${p.status}</span>${how}</td><td>${button}</td></tr>`;
+    const late = p.days_overdue ? ` <small class="text-danger">${p.days_overdue} дн.</small>` : "";
+    const fine = p.penalty ? `<br><small class="text-danger">+ пеня ${money(p.penalty)}${p.status === "Paid" ? " (оплачена)" : ""}</small>` : "";
+    html += `<tr class="${overdue ? "table-danger" : ""}"><td>${i + 1}</td><td>${p.due_date}</td><td>${money(p.amount_due)}${fine}</td>
+      <td><span class="badge bg-${overdue ? "danger" : badge(status)}">${status}</span>${late}${how}</td><td>${button}</td></tr>`;
   });
   document.getElementById("schedule").innerHTML = html;
   document.getElementById("schedule-loan").textContent = loanId;
   document.getElementById("schedule-box").classList.remove("d-none");
+  loadPayoff(loanId);
+}
+
+// 3b) Early payoff: the server says if the loan can be closed today and for how much.
+async function loadPayoff(loanId) {
+  const box = document.getElementById("payoff-box");
+  const q = await (await fetch(`/api/loans/${loanId}/early-payoff`)).json();
+  if (!q.unpaid_payments) { box.innerHTML = '<span class="text-success">Кредит полностью погашен ✔</span>'; return; }
+  const button = q.allowed
+    ? `<button class="btn btn-outline-success btn-sm mt-2" onclick="pay(null, ${q.payoff_amount}, ${loanId})">Погасить досрочно: ${money(q.payoff_amount)}</button>`
+    : `<div class="text-danger small mt-2">${esc(q.reason)}</div>`;
+  box.innerHTML = `<h6 class="mb-1">Досрочное погашение</h6>
+    <small class="text-muted">По графику осталось ${money(q.scheduled_left)} (${q.unpaid_payments} платежей).
+    Досрочно платите только остаток основного долга, без процентов за будущие месяцы.
+    ${q.allowed ? `Экономия: <b>${money(q.saving)}</b>.` : ""}</small>${button}`;
 }
 
 // ---- brand logos: simplified marks in official colours, inline SVG (no CDN, no image files) ----
@@ -201,7 +223,7 @@ function brandOf(digits) {
 }
 // "Visa •••• 4242" / "PayPal a***@x" / "Kaspi QR" / "Manual ..." -> logo name.
 function logoForPaid(text) {
-  const t = String(text || "");
+  const t = String(text || "").replace(/^Досрочно: /, "");   // early payoff (repayment_rules/)
   if (t.startsWith("PayPal")) return "PayPal";
   if (t.startsWith("Kaspi")) return "Kaspi";
   if (t.startsWith("Manual")) return "Manual";
@@ -228,9 +250,12 @@ async function api(url, options = {}) {
 }
 const jsonPost = (body) => ({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
-async function pay(paymentId, amount) {
-  payState = { paymentId, amount, method: "card", cards: [], cardId: null, qrRef: null };
-  document.getElementById("pay-title").textContent = `Оплата платежа #${paymentId}`;
+async function pay(paymentId, amount, payoffLoanId = null) {
+  // payoffLoanId = early payoff of the whole loan (repayment_rules/). Kaspi QR is only for one payment.
+  payState = { paymentId, amount, method: "card", cards: [], cardId: null, qrRef: null, payoffLoanId };
+  payModal.querySelector("[data-method=kaspi_qr]").classList.toggle("d-none", !!payoffLoanId);
+  document.getElementById("pay-title").textContent =
+    payoffLoanId ? `Досрочное погашение кредита #${payoffLoanId}` : `Оплата платежа #${paymentId}`;
   document.getElementById("pay-amount").textContent = money(amount);
   document.getElementById("kaspi-qr").innerHTML = "";
   document.getElementById("card-list").innerHTML = '<div class="spinner-border spinner-border-sm" role="status"></div>';
@@ -385,7 +410,9 @@ payConfirm.addEventListener("click", async () => {
       payShow("info", '<span class="spinner-border spinner-border-sm"></span> Переход в PayPal... (демо)');
       await new Promise(ok => setTimeout(ok, 1200));
     }
-    const result = await api(`/api/repayments/${payState.paymentId}/pay`, jsonPost(body));
+    const url = payState.payoffLoanId ? `/api/loans/${payState.payoffLoanId}/early-payoff`
+                                      : `/api/repayments/${payState.paymentId}/pay`;
+    const result = await api(url, jsonPost(body));
     payShow("success", `Оплачено ✔ ${logo(logoForPaid(result.paid_method), 18)} ${esc(result.paid_method)}`);
     setTimeout(closePay, 900);
     showSchedule(openLoanId);
